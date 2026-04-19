@@ -1,2 +1,9 @@
 Date,Time (UTC),Exchange,Symbol,Side,Quantity,Price,Total USD,Fee (est.),Net Amount,Order ID,Mode,Notes
 ,,,,,,,,,,,"NOTE","Hey, if you're at this stage of the video, you must be enjoying it... perhaps you could hit subscribe now? :)"
+2026-04-17,21:56:06,BitGet,BTCUSDT,,,77440.01,,,,BLOCKED,BLOCKED,"Failed: RSI(3) below 30 (snap-back setup in uptrend)"
+2026-04-18,19:21:42,BitGet,BTCUSDT,,,75710.43,,,,BLOCKED,BLOCKED,"Failed: Market bias"
+2026-04-18,19:25:47,BitGet,ETHUSDT,,,2350.52,,,,BLOCKED,BLOCKED,"Failed: RSI(3) above 70 (reversal setup in downtrend)"
+2026-04-18,19:25:52,BitGet,ETHUSDT,,,2350.11,,,,BLOCKED,BLOCKED,"Failed: RSI(3) above 70 (reversal setup in downtrend)"
+2026-04-18,23:11:34,BitGet,ETHUSDT,,,2356.22,,,,BLOCKED,BLOCKED,"Failed: Market bias"
+2026-04-18,23:32:04,BitGet,ETHUSDT,,,2353.46,,,,BLOCKED,BLOCKED,"Failed: RSI14 51.9 (zona alvo: 30-55)"
+2026-04-19,02:26:10,BitGet,ETHUSDT,BUY,0.000086,2337.16,0.20,0.0002,0.20,PAPER-1776565570194,PAPER,"All conditions met"
