@@ -620,14 +620,6 @@ async function run() {
 
 if (process.argv.includes("--tax-summary")) {
   generateTaxSummary();
-} else if (process.argv.includes("--print-csv")) {
-  if (existsSync(CSV_FILE)) {
-    console.log("\n=== TRADES CSV COMPLETO ===");
-    console.log(readFileSync(CSV_FILE, "utf8"));
-    console.log("=== FIM CSV ===\n");
-  } else {
-    console.log("Nenhum trades.csv encontrado em", CSV_FILE);
-  }
 } else {
   // Hard kill after 90s — uses SIGKILL so nothing can block it
   const hardKill = setTimeout(() => {
