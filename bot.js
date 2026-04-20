@@ -121,13 +121,13 @@ function calcPnlPct(direction, entryPrice, exitPrice) {
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
-  // Binance public klines — no auth needed
-  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  // Binance US spot API — accessible from US-based cloud servers (no geo-block)
+  const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+    if (!res.ok) throw new Error(`BinanceUS API error: ${res.status}`);
     const json = await res.json();
     return json.map((k) => ({
       time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
@@ -484,7 +484,7 @@ async function run() {
   console.log(`TP: ${(tpPct*100).toFixed(1)}% | SL: ${(slPct*100).toFixed(1)}%`);
 
   // Fetch candle data
-  console.log("\n── Fetching market data from Binance ───────────────────────\n");
+  console.log("\n── Fetching market data from BinanceUS ─────────────────────\n");
   const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
   const closes  = candles.map((c) => c.close);
   const price   = closes[closes.length - 1];
