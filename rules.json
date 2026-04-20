@@ -1,55 +1,60 @@
 {
   "watchlist": ["ETHUSDT"],
-  "default_timeframe": "5m",
+  "default_timeframe": "3m",
   "strategy": {
-    "name": "ETH Momentum Quantitativo Agressivo v2",
-    "sources": ["Custom quant — EMA cross momentum + VWAP bias"],
-    "description": "Estratégia agressiva de alta frequência para ETH no 5M. Usa cruzamento de EMA para timing de entrada, VWAP como filtro de viés e RSI(14) em zona neutra para confirmar momentum. Gera múltiplos sinais por dia em ambas direções."
+    "name": "ETH Momentum Quantitativo v3",
+    "sources": ["Custom quant — EMA cross + VWAP + 15m trend filter + volume"],
+    "description": "Versão 3 da estratégia. Mantém a base da v2 (EMA 8/21 + VWAP + RSI14) mas adiciona dois filtros críticos: tendência do 15m (só opera na direção do trend maior) e confirmação de volume (apenas em candles com volume acima da média). RSI zones mais precisas. Resultado esperado: menos operações, maior win rate."
   },
   "indicators": {
-    "ema_8": "Tendência ultra rápida. Cruzamento com EMA(21) gera sinal.",
-    "ema_21": "Tendência de curto prazo. EMA(8) acima = momentum de alta. Abaixo = momentum de baixa.",
-    "rsi_14": "Filtro de momentum. Zona 45-65 para long. Zona 35-55 para short. Evita extremos.",
-    "vwap": "Filtro de viés. Acima = favorece long. Abaixo = favorece short."
+    "ema_8_3m":  "Tendência rápida no 3m. Cruzamento com EMA21 gera sinal.",
+    "ema_21_3m": "Tendência de curto prazo no 3m.",
+    "ema_8_15m": "Tendência rápida no 15m — filtro de trend maior.",
+    "ema_21_15m":"Tendência de médio prazo no 15m — filtro de trend maior.",
+    "rsi_14":    "Filtro de momentum. Zona 50-65 para long. Zona 35-50 para short.",
+    "vwap":      "Filtro de viés intraday. Acima = favorece long. Abaixo = favorece short.",
+    "volume":    "Confirmação de convicção. Mínimo 1.3x a média dos últimos 20 candles."
   },
   "bias_criteria": {
     "bullish": [
       "Preço está acima do VWAP",
-      "EMA(8) está acima da EMA(21)"
+      "EMA(8) 3m está acima da EMA(21) 3m",
+      "EMA(8) 15m está acima da EMA(21) 15m — trend maior confirma"
     ],
     "bearish": [
       "Preço está abaixo do VWAP",
-      "EMA(8) está abaixo da EMA(21)"
+      "EMA(8) 3m está abaixo da EMA(21) 3m",
+      "EMA(8) 15m está abaixo da EMA(21) 15m — trend maior confirma"
     ]
   },
   "entry_rules": {
     "long": [
       "Preço está acima do VWAP — viés bullish confirmado",
-      "EMA(8) cruzou acima da EMA(21) — momentum de alta ativado",
-      "RSI(14) está entre 45 e 70 — momentum crescente sem sobrecompra"
+      "EMA(8) 3m acima da EMA(21) 3m — momentum de alta no curto prazo",
+      "EMA(8) 15m acima da EMA(21) 15m — trend maior favorável",
+      "RSI(14) entre 50 e 65 — momentum crescente sem sobrecompra",
+      "Volume atual >= 1.3x média dos últimos 20 candles — convicção confirmada"
     ],
     "short": [
       "Preço está abaixo do VWAP — viés bearish confirmado",
-      "EMA(8) cruzou abaixo da EMA(21) — momentum de baixa ativado",
-      "RSI(14) está entre 30 e 55 — momentum decrescente sem sobrevenda"
+      "EMA(8) 3m abaixo da EMA(21) 3m — momentum de baixa no curto prazo",
+      "EMA(8) 15m abaixo da EMA(21) 15m — trend maior favorável",
+      "RSI(14) entre 35 e 50 — momentum decrescente sem sobrevenda",
+      "Volume atual >= 1.3x média dos últimos 20 candles — convicção confirmada"
     ]
   },
   "exit_rules": [
-    "Long: sair quando EMA(8) cruzar abaixo da EMA(21)",
-    "Long: sair quando RSI(14) ultrapassar 75",
-    "Short: sair quando EMA(8) cruzar acima da EMA(21)",
-    "Short: sair quando RSI(14) cair abaixo de 25",
-    "Stop: 0.4% contra a posição",
-    "Alvo: 0.8% a favor — R/R 1:2"
+    "Take profit: +1% a favor da posição",
+    "Stop loss: -0.5% contra a posição",
+    "R/R: 2:1 — sem saída por sinal reverso"
   ],
   "risk_rules": [
     "Risco máximo de 1% do portfólio por operação",
     "Tamanho máximo de trade limitado por MAX_TRADE_SIZE_USD no .env",
     "Máximo de operações por dia limitado por MAX_TRADES_PER_DAY no .env",
-    "Não operar se preço estiver mais de 2% do VWAP",
     "Manter PAPER_TRADING=true até validar a estratégia"
   ],
-  "notes": "Estratégia agressiva v2 — usa EMA cross como gatilho principal com RSI(14) em zona ampla (30-70). Gera muito mais sinais que a v1. Monitorar win rate de perto nos primeiros dias.",
+  "notes": "v3: filtro 15m elimina entradas contra-trend. Filtro de volume elimina sinais fracos. RSI mais preciso (50-65 / 35-50). Espera-se menor frequência de trades mas win rate significativamente maior.",
   "take_profit_pct": 0.01,
   "stop_loss_pct": 0.005,
   "risk_reward_ratio": 2.0

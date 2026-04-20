@@ -7,6 +7,11 @@
  *
  * Exit system: manages positions with TP/SL only (signal reversal disabled).
  * Parameters: take_profit_pct and stop_loss_pct in rules.json (Claude optimizes these)
+ *
+ * v3 improvements:
+ *  - 15m higher-timeframe trend filter (only trade WITH the 15m trend)
+ *  - Volume confirmation (entry only on volume > 1.3x 20-candle avg)
+ *  - Tighter RSI zones: LONG 50-65, SHORT 35-50
  */
 
 import "dotenv/config";
@@ -165,6 +170,12 @@ function calcRSI(closes, period = 14) {
   return 100 - 100 / (1 + rs);
 }
 
+function calcVolumeAvg(candles, period = 20) {
+  const recent = candles.slice(-period - 1, -1); // last N closed candles (exclude current)
+  if (recent.length === 0) return 0;
+  return recent.reduce((sum, c) => sum + c.volume, 0) / recent.length;
+}
+
 function calcVWAP(candles) {
   const midnightUTC = new Date();
   midnightUTC.setUTCHours(0, 0, 0, 0);
@@ -179,13 +190,19 @@ function calcVWAP(candles) {
 
 // ── Safety Check ─────────────────────────────────────────────────────────────────
 
-function runSafetyCheck(price, ema8, ema21, vwap, rsi14) {
-  const bullishBias  = price > vwap;
-  const bearishBias  = price < vwap;
-  const emaUptrend   = ema8 > ema21;
-  const emaDowntrend = ema8 < ema21;
-  const rsiLong      = rsi14 >= 45 && rsi14 <= 70;
-  const rsiShort     = rsi14 >= 30 && rsi14 <= 55;
+function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, currentVolume, avgVolume) {
+  const bullishBias    = price > vwap;
+  const bearishBias    = price < vwap;
+  const emaUptrend     = ema8 > ema21;
+  const emaDowntrend   = ema8 < ema21;
+  // v3: tighter RSI zones — above/below midpoint confirms momentum direction
+  const rsiLong        = rsi14 >= 50 && rsi14 <= 65;
+  const rsiShort       = rsi14 >= 35 && rsi14 <= 50;
+  // v3: 15m trend filter
+  const trend15mBull   = ema8_15m > ema21_15m;
+  const trend15mBear   = ema8_15m < ema21_15m;
+  // v3: volume confirmation
+  const volumeOk       = avgVolume > 0 && currentVolume >= avgVolume * 1.3;
 
   let signal = "NEUTRAL";
   let reason = "";
@@ -202,25 +219,37 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14) {
     {
       pass: emaUptrend || emaDowntrend,
       label: emaUptrend
-        ? `EMA uptrend: EMA8 ${ema8.toFixed(2)} > EMA21 ${ema21.toFixed(2)}`
+        ? `EMA3m uptrend: EMA8 ${ema8.toFixed(2)} > EMA21 ${ema21.toFixed(2)}`
         : emaDowntrend
-        ? `EMA downtrend: EMA8 ${ema8.toFixed(2)} < EMA21 ${ema21.toFixed(2)}`
-        : `EMA lateral: EMA8 == EMA21`,
+        ? `EMA3m downtrend: EMA8 ${ema8.toFixed(2)} < EMA21 ${ema21.toFixed(2)}`
+        : `EMA3m lateral: EMA8 == EMA21`,
     },
     {
       pass: (bullishBias && emaUptrend && rsiLong) || (bearishBias && emaDowntrend && rsiShort),
-      label: `RSI14 ${rsi14.toFixed(1)}` + (bullishBias ? " (zona alvo: 45-70)" : " (zona alvo: 30-55)"),
+      label: `RSI14 ${rsi14.toFixed(1)}` + (bullishBias ? " (zona alvo: 50-65)" : " (zona alvo: 35-50)"),
+    },
+    {
+      pass: (bullishBias && trend15mBull) || (bearishBias && trend15mBear),
+      label: trend15mBull
+        ? `Tendencia 15m: ALTA (EMA8_15m ${ema8_15m.toFixed(2)} > EMA21_15m ${ema21_15m.toFixed(2)})`
+        : trend15mBear
+        ? `Tendencia 15m: BAIXA (EMA8_15m ${ema8_15m.toFixed(2)} < EMA21_15m ${ema21_15m.toFixed(2)})`
+        : `Tendencia 15m: indefinida`,
+    },
+    {
+      pass: volumeOk,
+      label: `Volume: ${currentVolume.toFixed(2)} vs media ${avgVolume.toFixed(2)} (min: ${(avgVolume*1.3).toFixed(2)})`,
     },
   ];
 
   const allPass = results.every((r) => r.pass);
 
-  if (bullishBias && emaUptrend && rsiLong) {
+  if (bullishBias && emaUptrend && rsiLong && trend15mBull && volumeOk) {
     signal = "LONG";
-    reason = `LONG | preco>${vwap.toFixed(2)} (VWAP) | EMA8>EMA21 | RSI14=${rsi14.toFixed(1)}`;
-  } else if (bearishBias && emaDowntrend && rsiShort) {
+    reason = `LONG | VWAP bull | EMA3m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=${currentVolume.toFixed(0)}`;
+  } else if (bearishBias && emaDowntrend && rsiShort && trend15mBear && volumeOk) {
     signal = "SHORT";
-    reason = `SHORT | preco<${vwap.toFixed(2)} (VWAP) | EMA8<EMA21 | RSI14=${rsi14.toFixed(1)}`;
+    reason = `SHORT | VWAP bear | EMA3m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=${currentVolume.toFixed(0)}`;
   } else {
     const failed = results.filter((r) => !r.pass).map((r) => r.label);
     reason = "NEUTRO | " + failed.join(" | ");
@@ -484,24 +513,36 @@ async function run() {
   console.log(`Symbol: ${CONFIG.symbol} | Timeframe: ${CONFIG.timeframe}`);
   console.log(`TP: ${(tpPct*100).toFixed(1)}% | SL: ${(slPct*100).toFixed(1)}%`);
 
-  // Fetch candle data
+  // Fetch candle data (3m primary + 15m trend filter)
   console.log("\n── Fetching market data from BinanceUS ─────────────────────\n");
-  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
-  const closes  = candles.map((c) => c.close);
-  const price   = closes[closes.length - 1];
+  const [candles, candles15m] = await Promise.all([
+    fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500),
+    fetchCandles(CONFIG.symbol, "15m", 100),
+  ]);
+  const closes    = candles.map((c) => c.close);
+  const closes15m = candles15m.map((c) => c.close);
+  const price     = closes[closes.length - 1];
 
   // Calculate indicators
-  const ema8  = calcEMA(closes, 8);
-  const ema21 = calcEMA(closes, 21);
-  const vwap  = calcVWAP(candles);
-  const rsi3  = calcRSI(closes, 3);
-  const rsi14 = calcRSI(closes);
+  const ema8        = calcEMA(closes, 8);
+  const ema21       = calcEMA(closes, 21);
+  const ema8_15m    = calcEMA(closes15m, 8);
+  const ema21_15m   = calcEMA(closes15m, 21);
+  const vwap        = calcVWAP(candles);
+  const rsi3        = calcRSI(closes, 3);
+  const rsi14       = calcRSI(closes);
+  const avgVolume   = calcVolumeAvg(candles, 20);
+  const curVolume   = candles[candles.length - 1].volume;
+
+  const trend15m = ema8_15m > ema21_15m ? "ALTA" : "BAIXA";
 
   console.log(`  Current price: $${price.toFixed(2)}`);
-  console.log(`  EMA(8):  ${ema8.toFixed(2)}`);
-  console.log(`  EMA(21): ${ema21.toFixed(2)}`);
-  console.log(`  VWAP:    ${vwap ? vwap.toFixed(2) : "N/A"}`);
-  console.log(`  RSI(14): ${rsi14 ? rsi14.toFixed(2) : "N/A"}`);
+  console.log(`  EMA(8):       ${ema8.toFixed(2)}`);
+  console.log(`  EMA(21):      ${ema21.toFixed(2)}`);
+  console.log(`  VWAP:         ${vwap ? vwap.toFixed(2) : "N/A"}`);
+  console.log(`  RSI(14):      ${rsi14 ? rsi14.toFixed(2) : "N/A"}`);
+  console.log(`  Tendencia 15m: ${trend15m} (EMA8=${ema8_15m.toFixed(2)} EMA21=${ema21_15m.toFixed(2)})`);
+  console.log(`  Volume atual: ${curVolume.toFixed(2)} | Media 20c: ${avgVolume.toFixed(2)}`);
 
   if (vwap === null || vwap === undefined || rsi3 === null || rsi3 === undefined) {
     console.log("\n⚠  Not enough data to calculate indicators. Exiting.");
@@ -509,7 +550,9 @@ async function run() {
   }
 
   // Run safety check
-  const { results, allPass, signal, reason } = runSafetyCheck(price, ema8, ema21, vwap, rsi14);
+  const { results, allPass, signal, reason } = runSafetyCheck(
+    price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, curVolume, avgVolume
+  );
 
   console.log("\n── Decision ─────────────────────────────────────────────────\n");
   console.log(`  Signal: ${signal} | ${reason}`);
