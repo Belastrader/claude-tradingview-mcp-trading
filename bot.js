@@ -5,7 +5,7 @@
  * Binance (free, no auth), calculates all indicators, runs safety check,
  * executes via BitGet if everything lines up.
  *
- * Exit system: manages positions with TP/SL and signal reversal.
+ * Exit system: manages positions with TP/SL only (signal reversal disabled).
  * Parameters: take_profit_pct and stop_loss_pct in rules.json (Claude optimizes these)
  */
 
@@ -539,14 +539,6 @@ async function run() {
     } else if (position.direction === "SHORT" && price >= position.stopLossPrice) {
       exitReason = "SL_HIT"; exitPrice = position.stopLossPrice;
     }
-    // Check signal reversal (close and flip)
-    else if (
-      (position.direction === "LONG"  && signal === "SHORT") ||
-      (position.direction === "SHORT" && signal === "LONG")
-    ) {
-      exitReason = "SIGNAL_REVERSE"; exitPrice = price;
-    }
-
     if (exitReason) {
       // Close the position
       if (!CONFIG.paperTrading) {
@@ -559,17 +551,8 @@ async function run() {
       }
       writeExitCsv(position, exitPrice, exitReason, CONFIG.paperTrading);
       clearPosition();
-
-      // If signal reversal: immediately open reverse position
-      if (exitReason === "SIGNAL_REVERSE") {
-        const withinLimits = checkTradeLimits(log);
-        if (withinLimits && allPass) {
-          console.log(`\n  Invertendo posicao: entrando ${signal}...`);
-          await enterPosition(signal, price, tpPct, slPct, log);
-        }
-      }
     } else {
-      console.log(`\n  Posicao mantida. Aguardando TP/SL ou reversao de sinal.`);
+      console.log(`\n  Posicao mantida. Aguardando TP/SL.`);
     }
 
   } else {
