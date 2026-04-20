@@ -604,17 +604,22 @@ async function run() {
 if (process.argv.includes("--tax-summary")) {
   generateTaxSummary();
 } else {
-  // Hard kill after 90s — uses SIGKILL so nothing can block it
-  const hardKill = setTimeout(() => {
-    console.error("\n⏰ HARD TIMEOUT 90s: forcando encerramento.");
-    process.kill(process.pid, "SIGKILL");
-  }, 90_000);
-  hardKill.unref();
+  const INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
 
-  run()
-    .then(() => process.exit(0))   // força saída imediata — fecha conexões HTTP abertas (undici)
-    .catch((err) => {
-      console.error("Bot error:", err);
-      process.exit(1);
-    });
+  async function mainLoop() {
+    while (true) {
+      const start = Date.now();
+      try {
+        await run();
+      } catch (err) {
+        console.error("Bot error:", err.message);
+      }
+      const elapsed = Date.now() - start;
+      const wait = Math.max(0, INTERVAL_MS - elapsed);
+      console.log(`\n⏱  Proxima analise em ${Math.round(wait/1000)}s\n`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+
+  mainLoop();
 }

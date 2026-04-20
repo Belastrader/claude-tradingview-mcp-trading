@@ -2,7 +2,8 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": { "builder": "DOCKERFILE" },
   "deploy": {
-    "startCommand": "node bot.js --print-csv",
-    "cronSchedule": "*/5 * * * *"
+    "startCommand": "node bot.js",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
   }
 }
