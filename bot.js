@@ -121,23 +121,16 @@ function calcPnlPct(direction, entryPrice, exitPrice) {
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
-  // Bybit V5 public klines — no auth, works from any region including US
-  const intervalMap = {
-    "1m":"1","3m":"3","5m":"5","15m":"15",
-    "30m":"30","1H":"60","4H":"240","1D":"D","1W":"W",
-  };
-  const bybitInterval = intervalMap[interval] || "3";
-  const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+  // Binance public klines — no auth needed
+  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`Bybit API error: ${res.status}`);
+    if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
     const json = await res.json();
-    if (json.retCode !== 0) throw new Error(`Bybit API retCode ${json.retCode}: ${json.retMsg}`);
-    const list = (json.result?.list || []).reverse();
-    return list.map((k) => ({
-      time: parseInt(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+    return json.map((k) => ({
+      time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
       low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
     }));
   } finally {
@@ -491,7 +484,7 @@ async function run() {
   console.log(`TP: ${(tpPct*100).toFixed(1)}% | SL: ${(slPct*100).toFixed(1)}%`);
 
   // Fetch candle data
-  console.log("\n── Fetching market data from Bybit ─────────────────────────\n");
+  console.log("\n── Fetching market data from Binance ───────────────────────\n");
   const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
   const closes  = candles.map((c) => c.close);
   const price   = closes[closes.length - 1];
