@@ -72,9 +72,10 @@ const CONFIG = {
   },
 };
 
-const LOG_FILE      = "safety-check-log.json";
-const DATA_DIR = existsSync('/data') ? '/data' : '.'; const POSITION_FILE = DATA_DIR + '/positions.json';
-const CSV_FILE      = "trades.csv";
+const DATA_DIR      = existsSync('/data') ? '/data' : '.';
+const POSITION_FILE = DATA_DIR + '/positions.json';
+const LOG_FILE      = DATA_DIR + '/safety-check-log.json';
+const CSV_FILE      = DATA_DIR + '/trades.csv';
 
 // ── Logging ─────────────────────────────────────────────────────────────────────
 

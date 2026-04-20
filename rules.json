@@ -49,8 +49,8 @@
     "Não operar se preço estiver mais de 2% do VWAP",
     "Manter PAPER_TRADING=true até validar a estratégia"
   ],
-  "notes": "Estratégia agressiva v2 — usa EMA cross como gatilho principal com RSI(14) em zona ampla (30-70). Gera muito mais sinais que a v1. Monitorar win rate de perto nos primeiros dias."
+  "notes": "Estratégia agressiva v2 — usa EMA cross como gatilho principal com RSI(14) em zona ampla (30-70). Gera muito mais sinais que a v1. Monitorar win rate de perto nos primeiros dias.",
   "take_profit_pct": 0.01,
   "stop_loss_pct": 0.005,
-  "risk_reward_ratio": 2.0,
+  "risk_reward_ratio": 2.0
 }
