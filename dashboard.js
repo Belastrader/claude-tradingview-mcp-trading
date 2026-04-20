@@ -45,145 +45,140 @@ async function railwayGQL(query, variables = {}) {
   }
 }
 
-let _discoveredProject = null;
-let _discoveredService = null;
-let _needsIds = false;
+// ── Railway cache (3 min TTL to avoid rate limits) ────────────────────────────
+let _railwayCache = null;
+let _railwayCacheAt = 0;
+const CACHE_TTL_MS = 3 * 60 * 1000;
 
-async function discoverIds() {
-  if (RAILWAY_PROJECT_ID && RAILWAY_SERVICE_ID) return true;
-  if (_discoveredProject && _discoveredService) return true;
-  if (_needsIds) return false;
-
-  const data = await railwayGQL(`{
-    me {
-      projects { edges { node {
-        id name
-        services { edges { node { id name } } }
-      }}}
-    }
-  }`);
-
-  if (data?.me?.projects?.edges?.length) {
-    for (const pEdge of data.me.projects.edges) {
-      const proj = pEdge.node;
-      const services = proj.services?.edges || [];
-      const svc = services.find(e => /bot/i.test(e.node.name)) || services[0];
-      if (svc) {
-        _discoveredProject = proj.id;
-        _discoveredService = svc.node.id;
-        console.log(`Railway (token pessoal): projeto "${proj.name}" | servico "${svc.node.name}"`);
-        return true;
-      }
-    }
-  }
-
-  const depDirect = await railwayGQL(`{
-    deployments(input: {}) {
-      edges { node { id projectId serviceId status createdAt } }
-    }
-  }`);
-
-  if (depDirect?.deployments?.edges?.length) {
-    const first = depDirect.deployments.edges[0].node;
-    _discoveredProject = first.projectId;
-    _discoveredService = first.serviceId;
-    console.log(`Railway (token de projeto): project=${_discoveredProject} service=${_discoveredService}`);
-    return true;
-  }
-
-  _needsIds = true;
-  console.log('Railway: token de projeto detectado. Adicione RAILWAY_PROJECT_ID e RAILWAY_SERVICE_ID no dashboard.bat');
-  return false;
-}
-
-async function getRailwayRuns(limit = 15) {
+async function getRailwayRuns() {
   if (!RAILWAY_TOKEN) return { runs: [], error: 'RAILWAY_TOKEN nao configurado' };
 
-  const ok = await discoverIds();
-  if (!ok) return { runs: [], error: 'Token de projeto Railway: adicione RAILWAY_PROJECT_ID e RAILWAY_SERVICE_ID no dashboard.bat. Encontre na URL do Railway: railway.app/project/{ID}/service/{ID}' };
-
-  const projId = RAILWAY_PROJECT_ID || _discoveredProject;
-  const svcId  = RAILWAY_SERVICE_ID || _discoveredService;
-
-  let depData = null;
-
-  if (projId && svcId) {
-    const input = { projectId: projId, serviceId: svcId };
-    if (RAILWAY_ENVIRONMENT_ID) input.environmentId = RAILWAY_ENVIRONMENT_ID;
-    depData = await railwayGQL(`
-      query($input: DeploymentListInput!) {
-        deployments(input: $input) { edges { node { id status createdAt } } }
-      }
-    `, { input });
-    if (depData?.deployments?.edges?.length) {
-      console.log(`Railway: ${depData.deployments.edges.length} deployments (filtrado)`);
-    }
+  // Return cached data if fresh
+  if (_railwayCache && (Date.now() - _railwayCacheAt) < CACHE_TTL_MS) {
+    return _railwayCache;
   }
 
-  if (!depData?.deployments?.edges?.length) {
-    depData = await railwayGQL(`{ deployments(input: {}) { edges { node { id status createdAt } } } }`);
-    if (depData?.deployments?.edges?.length) {
-      console.log(`Railway: ${depData.deployments.edges.length} deployments (sem filtro)`);
-    }
+  const projId = RAILWAY_PROJECT_ID;
+  const svcId  = RAILWAY_SERVICE_ID;
+  if (!projId || !svcId) {
+    return { runs: [], error: 'Adicione RAILWAY_PROJECT_ID e RAILWAY_SERVICE_ID no dashboard.bat' };
   }
 
-  if (!depData?.deployments?.edges?.length) {
+  // 1. Get the latest active deployment (just 1 call)
+  const input = { projectId: projId, serviceId: svcId };
+  if (RAILWAY_ENVIRONMENT_ID) input.environmentId = RAILWAY_ENVIRONMENT_ID;
+  const depData = await railwayGQL(`
+    query($input: DeploymentListInput!) {
+      deployments(input: $input) { edges { node { id status createdAt } } }
+    }
+  `, { input });
+
+  const edges = depData?.deployments?.edges || [];
+  if (!edges.length) {
     return { runs: [], error: 'Nenhum deployment encontrado — verifique se o bot ja rodou no Railway.' };
   }
 
-  const recent = depData.deployments.edges.slice(0, limit);
-  const runs   = [];
+  // Find the most recent SUCCESS or INITIALIZING deployment (the running one)
+  const activeDep = edges.find(e => ['SUCCESS','INITIALIZING','DEPLOYING'].includes(e.node.status))
+                 || edges[0];
 
-  for (const edge of recent) {
-    const dep = edge.node;
-    const depTime = new Date(dep.createdAt).toLocaleString('pt-BR');
+  // 2. Get logs from that deployment (1 call)
+  const logData = await railwayGQL(`
+    query($deploymentId: String!) {
+      deploymentLogs(deploymentId: $deploymentId) { timestamp message }
+    }
+  `, { deploymentId: activeDep.node.id });
 
-    const logData = await railwayGQL(`
-      query($deploymentId: String!) {
-        deploymentLogs(deploymentId: $deploymentId) {
-          timestamp
-          message
-          severity
-        }
+  const logs = logData?.deploymentLogs || [];
+
+  // 3. Split logs into individual cron executions by "Starting Container" marker
+  const runs = [];
+  let currentBlock = [];
+  let currentTime  = null;
+
+  for (const log of logs) {
+    const msg = (log.message || '').trim();
+    if (msg === 'Starting Container') {
+      if (currentBlock.length > 0 && currentTime) {
+        runs.push(parseLogBlock(currentBlock, currentTime));
       }
-    `, { deploymentId: dep.id });
-
-    const logs = logData?.deploymentLogs || [];
-    const allText = logs.map(l => l.message || '').join('\n');
-
-    let signal = 'NEUTRAL';
-    let reason = 'Sem sinal detectado nos logs';
-
-    const longMatch  = allText.match(/LONG[^\n]{0,120}/);
-    const shortMatch = allText.match(/SHORT[^\n]{0,120}/);
-    const neutMatch  = allText.match(/NEUTR[^\n]{0,120}/);
-
-    if (longMatch)  { signal = 'LONG';    reason = longMatch[0].trim(); }
-    else if (shortMatch) { signal = 'SHORT';   reason = shortMatch[0].trim(); }
-    else if (neutMatch)  { signal = 'NEUTRAL'; reason = neutMatch[0].trim(); }
-
-    const priceMatch = allText.match(/pre[cc]o[:\s]+([\d.]+)/i) || allText.match(/price[:\s]+([\d.]+)/i) || allText.match(/close[:\s]+([\d.]+)/i);
-    const rsiMatch   = allText.match(/RSI14?[=:\s]+([\d.]+)/i)  || allText.match(/rsi[=:\s]+([\d.]+)/i);
-
-    const tradeMatch = allText.match(/trade\s+execut[a-z]+[^\n]{0,150}/i)
-                    || allText.match(/ordem\s+enviada?[^\n]{0,150}/i)
-                    || allText.match(/paper\s+trade[^\n]{0,150}/i)
-                    || allText.match(/(buy|sell)\s+order[^\n]{0,150}/i);
-    const traded = !!tradeMatch;
-
-    runs.push({
-      time:    depTime,
-      signal,
-      reason:  reason.slice(0, 80),
-      status:  dep.status,
-      price:   priceMatch ? priceMatch[1] : '--',
-      rsi14:   rsiMatch   ? rsiMatch[1]   : '--',
-      traded,
-      tradeInfo: tradeMatch ? tradeMatch[0].trim().slice(0, 80) : null,
-    });
+      currentBlock = [];
+      currentTime  = log.timestamp;
+    } else {
+      currentBlock.push(msg);
+    }
+  }
+  if (currentBlock.length > 0 && currentTime) {
+    runs.push(parseLogBlock(currentBlock, currentTime));
   }
 
-  return { runs, error: null };
+  // Most recent first, cap at 15
+  runs.reverse();
+  const result = { runs: runs.slice(0, 15), error: null };
+
+  _railwayCache   = result;
+  _railwayCacheAt = Date.now();
+  console.log(`Railway: ${runs.length} execucoes parseadas dos logs`);
+  return result;
+}
+
+function parseLogBlock(lines, timestamp) {
+  const text = lines.join('\n');
+
+  // Signal detection
+  let signal = 'NEUTRAL';
+  let reason = 'Sem sinal';
+
+  const sigMatch = text.match(/Signal:\s*(LONG|SHORT|NEUTRAL)[^\n]*/i);
+  if (sigMatch) {
+    signal = sigMatch[1].toUpperCase();
+    reason = sigMatch[0].replace(/Signal:\s*/i,'').trim();
+  } else if (/ENTRANDO LONG/i.test(text))  { signal = 'LONG';    reason = 'Entrada LONG'; }
+  else if (/ENTRANDO SHORT/i.test(text)) { signal = 'SHORT';   reason = 'Entrada SHORT'; }
+  else if (/Not enough data/i.test(text)) { signal = 'NEUTRAL'; reason = 'Dados insuficientes (RSI)'; }
+  else if (/POSICAO ABERTA/i.test(text))  {
+    const dirMatch = text.match(/POSICAO ABERTA\]\s*(LONG|SHORT)/i);
+    signal = dirMatch ? dirMatch[1].toUpperCase() : 'NEUTRAL';
+    reason = 'Posicao mantida';
+  }
+
+  // Price
+  const priceMatch = text.match(/Current price:\s*\$?([\d.]+)/i)
+                  || text.match(/Preco atual:\s*\$?([\d.]+)/i);
+  // RSI
+  const rsiMatch = text.match(/RSI\(14\):\s*([\d.]+)/i) || text.match(/RSI14?[=:\s]+([\d.]+)/i);
+  // Trade executed?
+  const entered   = /ENTRANDO (LONG|SHORT)/i.test(text);
+  const paperTrade = text.match(/PAPER TRADE[^\n]{0,100}/i);
+  const exited    = /\[SAIDA\]/i.test(text);
+  const exitMatch  = text.match(/\[SAIDA\][^\n]{0,100}/i);
+  const traded = entered || exited;
+
+  // Position info
+  const posMatch = text.match(/POSICAO ABERTA\]\s*(LONG|SHORT)\s*@\s*\$?([\d.]+)/i);
+  const pnlMatch = text.match(/PnL flutuante:\s*([+-][\d.]+%)/i);
+
+  let tradeInfo = null;
+  if (exited && exitMatch) tradeInfo = exitMatch[0].trim().slice(0, 100);
+  else if (entered && paperTrade) tradeInfo = paperTrade[0].trim().slice(0, 100);
+  else if (posMatch) tradeInfo = `Posicao ${posMatch[1]} @ $${posMatch[2]}${pnlMatch ? ' | '+pnlMatch[1] : ''}`;
+
+  // Status
+  const status = /Not enough data/i.test(text) ? 'SKIP'
+               : exited ? 'EXIT'
+               : entered ? 'ENTRY'
+               : 'SUCCESS';
+
+  return {
+    time:      new Date(timestamp).toLocaleString('pt-BR'),
+    signal,
+    reason:    reason.slice(0, 80),
+    status,
+    price:     priceMatch ? priceMatch[1] : '--',
+    rsi14:     rsiMatch   ? rsiMatch[1]   : '--',
+    traded,
+    tradeInfo,
+  };
 }
 
 function loadJson(p, fb) { try { return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p,'utf-8')) : fb; } catch { return fb; } }

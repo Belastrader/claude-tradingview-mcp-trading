@@ -121,19 +121,28 @@ function calcPnlPct(direction, entryPrice, exitPrice) {
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
+  // Bybit V5 public klines — no auth, works from any region including US
   const intervalMap = {
-    "1m":"1m","3m":"3m","5m":"5m","15m":"15m",
-    "30m":"30m","1H":"1h","4H":"4h","1D":"1d","1W":"1w",
+    "1m":"1","3m":"3","5m":"5","15m":"15",
+    "30m":"30","1H":"60","4H":"240","1D":"D","1W":"W",
   };
-  const binanceInterval = intervalMap[interval] || "1m";
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${binanceInterval}&limit=${limit}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
-  const data = await res.json();
-  return data.map((k) => ({
-    time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
-    low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
-  }));
+  const bybitInterval = intervalMap[interval] || "3";
+  const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Bybit API error: ${res.status}`);
+    const json = await res.json();
+    if (json.retCode !== 0) throw new Error(`Bybit API retCode ${json.retCode}: ${json.retMsg}`);
+    const list = (json.result?.list || []).reverse();
+    return list.map((k) => ({
+      time: parseInt(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+      low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
+    }));
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ── Indicators ───────────────────────────────────────────────────────────────────
@@ -482,7 +491,7 @@ async function run() {
   console.log(`TP: ${(tpPct*100).toFixed(1)}% | SL: ${(slPct*100).toFixed(1)}%`);
 
   // Fetch candle data
-  console.log("\n── Fetching market data from Binance ───────────────────────\n");
+  console.log("\n── Fetching market data from Bybit ─────────────────────────\n");
   const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
   const closes  = candles.map((c) => c.close);
   const price   = closes[closes.length - 1];
@@ -618,8 +627,17 @@ async function run() {
 if (process.argv.includes("--tax-summary")) {
   generateTaxSummary();
 } else {
-  run().catch((err) => {
-    console.error("Bot error:", err);
-    process.exit(1);
-  });
+  // Hard kill after 90s — uses SIGKILL so nothing can block it
+  const hardKill = setTimeout(() => {
+    console.error("\n⏰ HARD TIMEOUT 90s: forcando encerramento.");
+    process.kill(process.pid, "SIGKILL");
+  }, 90_000);
+  hardKill.unref();
+
+  run()
+    .then(() => process.exit(0))   // força saída imediata — fecha conexões HTTP abertas (undici)
+    .catch((err) => {
+      console.error("Bot error:", err);
+      process.exit(1);
+    });
 }

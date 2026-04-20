@@ -3,8 +3,7 @@
   "build": { "builder": "NIXPACKS" },
   "deploy": {
     "startCommand": "node bot.js",
-    "cronSchedule": "*/3 * * * *",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
+    "cronSchedule": "*/5 * * * *",
+    "restartPolicyType": "NEVER"
   }
 }
