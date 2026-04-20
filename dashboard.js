@@ -331,7 +331,7 @@ tr:last-child td{border-bottom:none}
         <div class="prow"><span class="k">Stop Loss</span><span class="v">0.5%</span></div>
         <div class="prow"><span class="k">R/R</span><span class="v">1:2</span></div>
         <div class="prow"><span class="k">Modo</span><span class="v" style="color:#68d391">Paper Trading</span></div>
-        <div class="prow"><span class="k">Cron</span><span class="v">A cada 3 minutos</span></div>
+        <div class="prow"><span class="k">Cron</span><span class="v">A cada 5 minutos</span></div>
         <div class="prow"><span class="k">Max Trades/dia</span><span class="v" style="color:#63b3ed">1000</span></div>
       </div>
     </div>
