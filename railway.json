@@ -3,6 +3,6 @@
   "build": { "builder": "DOCKERFILE" },
   "deploy": {
     "startCommand": "node bot.js",
-    "cronSchedule": "*/5 * * * *"
+    "cronSchedule": "*/3 * * * *"
   }
 }
