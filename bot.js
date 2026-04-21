@@ -649,6 +649,41 @@ if (process.argv.includes("--tax-summary")) {
 } else {
   const INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
 
+  // ── Status HTTP server (Railway expõe automaticamente) ───────────────────────
+  import("http").then(({ default: http }) => {
+    const PORT = process.env.PORT || 3000;
+    http.createServer((req, res) => {
+      if (req.url === "/trades") {
+        try {
+          const data = existsSync(CSV_FILE) ? readFileSync(CSV_FILE, "utf8") : "no trades yet";
+          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end(data);
+        } catch (e) {
+          res.writeHead(500); res.end(e.message);
+        }
+      } else if (req.url === "/status") {
+        const pos = loadPosition();
+        const log = loadLog();
+        const entries = log.trades || [];
+        const paper  = entries.filter(t => t.orderPlaced && t.paperTrading);
+        const blocked = entries.filter(t => !t.orderPlaced);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          version: "v3",
+          uptime: process.uptime(),
+          position: pos,
+          totalAnalyses: entries.length,
+          tradesEntered: paper.length,
+          blocked: blocked.length,
+          lastAnalysis: entries[entries.length - 1]?.timestamp || null,
+        }, null, 2));
+      } else {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("trading-bot v3 online\nEndpoints: /trades /status");
+      }
+    }).listen(PORT, () => console.log(`📡 Status server on :${PORT}`));
+  });
+
   async function mainLoop() {
     while (true) {
       const start = Date.now();
