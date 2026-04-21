@@ -124,6 +124,37 @@ function calcPnlPct(direction, entryPrice, exitPrice) {
   }
 }
 
+// ── TradingView Scanner API ───────────────────────────────────────────────────────
+// Usa o endpoint público do screener do TV (sem autenticação, funciona no free)
+// Retorna o consenso de 26 indicadores: STRONG_BUY / BUY / NEUTRAL / SELL / STRONG_SELL
+
+async function fetchTVAnalysis(symbol, interval = "3") {
+  const tvInterval = interval === "3m" ? "3" : interval.replace("m","").replace("h","0");
+  const ticker = `BINANCE:${symbol}|${tvInterval}`;
+  try {
+    const res = await fetch("https://scanner.tradingview.com/crypto/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbols: { tickers: [ticker] },
+        columns: ["Recommend.All", "Recommend.MA", "Recommend.Other"],
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return "UNAVAILABLE";
+    const data = await res.json();
+    const rec = data?.data?.[0]?.d?.[0];
+    if (rec === null || rec === undefined) return "UNAVAILABLE";
+    if (rec >=  0.5) return "STRONG_BUY";
+    if (rec >=  0.1) return "BUY";
+    if (rec <= -0.5) return "STRONG_SELL";
+    if (rec <= -0.1) return "SELL";
+    return "NEUTRAL";
+  } catch {
+    return "UNAVAILABLE";
+  }
+}
+
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
@@ -513,11 +544,12 @@ async function run() {
   console.log(`Symbol: ${CONFIG.symbol} | Timeframe: ${CONFIG.timeframe}`);
   console.log(`TP: ${(tpPct*100).toFixed(1)}% | SL: ${(slPct*100).toFixed(1)}%`);
 
-  // Fetch candle data (3m primary + 15m trend filter)
-  console.log("\n── Fetching market data from BinanceUS ─────────────────────\n");
-  const [candles, candles15m] = await Promise.all([
+  // Fetch candle data (3m primary + 15m trend filter) + TradingView consensus
+  console.log("\n── Fetching market data ─────────────────────────────────────\n");
+  const [candles, candles15m, tvSignal] = await Promise.all([
     fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500),
     fetchCandles(CONFIG.symbol, "15m", 100),
+    fetchTVAnalysis(CONFIG.symbol, CONFIG.timeframe),
   ]);
   const closes    = candles.map((c) => c.close);
   const closes15m = candles15m.map((c) => c.close);
@@ -543,6 +575,7 @@ async function run() {
   console.log(`  RSI(14):      ${rsi14 ? rsi14.toFixed(2) : "N/A"}`);
   console.log(`  Tendencia 15m: ${trend15m} (EMA8=${ema8_15m.toFixed(2)} EMA21=${ema21_15m.toFixed(2)})`);
   console.log(`  Volume atual: ${curVolume.toFixed(2)} | Media 20c: ${avgVolume.toFixed(2)}`);
+  console.log(`  TradingView:  ${tvSignal}`);
 
   if (vwap === null || vwap === undefined || rsi3 === null || rsi3 === undefined) {
     console.log("\n⚠  Not enough data to calculate indicators. Exiting.");
@@ -555,6 +588,13 @@ async function run() {
   );
 
   console.log("\n── Decision ─────────────────────────────────────────────────\n");
+  // Soft filter: log quando TV discorda (não bloqueia, mas avisa)
+  const tvConflict =
+    (signal === "LONG"  && (tvSignal === "STRONG_SELL" || tvSignal === "SELL")) ||
+    (signal === "SHORT" && (tvSignal === "STRONG_BUY"  || tvSignal === "BUY"));
+  if (tvConflict) {
+    console.log(`  ⚠️  TradingView consensus (${tvSignal}) diverge do sinal ${signal} — cautela extra`);
+  }
   console.log(`  Signal: ${signal} | ${reason}`);
 
   // ── Check open position first ──────────────────────────────────────────────
@@ -613,6 +653,7 @@ async function run() {
       const logEntry = {
         timestamp: new Date().toISOString(),
         symbol: CONFIG.symbol, timeframe: CONFIG.timeframe, price, signal,
+        tvSignal,
         indicators: { ema8, vwap, rsi14: rsi3 }, conditions: results,
         allPass, tradeSize: Math.min(CONFIG.portfolioValue * 0.01, CONFIG.maxTradeSizeUSD),
         orderPlaced: false, orderId: null, paperTrading: CONFIG.paperTrading,
@@ -624,6 +665,8 @@ async function run() {
 
     } else if (signal === "LONG" || signal === "SHORT") {
       console.log(`\n✅ TODAS CONDICOES ATENDIDAS – Entrando ${signal}`);
+      // Aviso se TV diverge — não impede a entrada (estratégia principal domina)
+      if (tvConflict) console.log(`  ⚠️  Nota: TradingView consensus=${tvSignal} mas entrando com base na estratégia v4`);
       await enterPosition(signal, price, tpPct, slPct, log);
 
     } else {
@@ -631,6 +674,7 @@ async function run() {
       const logEntry = {
         timestamp: new Date().toISOString(),
         symbol: CONFIG.symbol, timeframe: CONFIG.timeframe, price, signal,
+        tvSignal,
         indicators: { ema8, vwap, rsi14: rsi3 }, conditions: results,
         allPass: false, tradeSize: Math.min(CONFIG.portfolioValue * 0.01, CONFIG.maxTradeSizeUSD),
         orderPlaced: false, orderId: null, paperTrading: CONFIG.paperTrading, limits: {},
