@@ -158,18 +158,33 @@ async function fetchTVAnalysis(symbol, interval = "3") {
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
-  // Binance US spot API — accessible from US-based cloud servers (no geo-block)
-  const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  // Binance global (primary) — much higher liquidity than Binance US.
+  // Fallback to Binance US if global is geo-blocked on the server.
+  // k[7] = quote asset volume (USDT) — more stable for volume filters than base currency
+  const endpoints = [
+    `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+    `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+  ];
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
+  let lastErr;
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`BinanceUS API error: ${res.status}`);
-    const json = await res.json();
-    return json.map((k) => ({
-      time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
-      low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
-    }));
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+        const json = await res.json();
+        // Use quote volume (k[7], in USDT) so the filter is meaningful regardless of asset price
+        return json.map((k) => ({
+          time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
+          low: parseFloat(k[3]), close: parseFloat(k[4]),
+          volume: parseFloat(k[7]),  // quote volume in USDT
+        }));
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr;
   } finally {
     clearTimeout(timeout);
   }
@@ -269,7 +284,7 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
     },
     {
       pass: volumeOk,
-      label: `Volume: ${currentVolume.toFixed(2)} vs media ${avgVolume.toFixed(2)} (min: ${(avgVolume*1.3).toFixed(2)})`,
+      label: `Volume USDT: $${currentVolume.toFixed(0)} vs media $${avgVolume.toFixed(0)} (min: $${(avgVolume*1.3).toFixed(0)})`,
     },
   ];
 
@@ -277,10 +292,10 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
 
   if (bullishBias && emaUptrend && rsiLong && trend15mBull && volumeOk) {
     signal = "LONG";
-    reason = `LONG | VWAP bull | EMA3m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=${currentVolume.toFixed(0)}`;
+    reason = `LONG | VWAP bull | EMA3m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K`;
   } else if (bearishBias && emaDowntrend && rsiShort && trend15mBear && volumeOk) {
     signal = "SHORT";
-    reason = `SHORT | VWAP bear | EMA3m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=${currentVolume.toFixed(0)}`;
+    reason = `SHORT | VWAP bear | EMA3m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K`;
   } else {
     const failed = results.filter((r) => !r.pass).map((r) => r.label);
     reason = "NEUTRO | " + failed.join(" | ");
@@ -574,10 +589,11 @@ async function run() {
   console.log(`  VWAP:         ${vwap ? vwap.toFixed(2) : "N/A"}`);
   console.log(`  RSI(14):      ${rsi14 ? rsi14.toFixed(2) : "N/A"}`);
   console.log(`  Tendencia 15m: ${trend15m} (EMA8=${ema8_15m.toFixed(2)} EMA21=${ema21_15m.toFixed(2)})`);
-  console.log(`  Volume atual: ${curVolume.toFixed(2)} | Media 20c: ${avgVolume.toFixed(2)}`);
+  const fmtVol = (v) => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v/1e3).toFixed(1)}K` : `$${v.toFixed(0)}`;
+  console.log(`  Volume atual (USDT): ${fmtVol(curVolume)} | Media 20c: ${fmtVol(avgVolume)}`);
   console.log(`  TradingView:  ${tvSignal}`);
 
-  if (vwap === null || vwap === undefined || rsi3 === null || rsi3 === undefined) {
+  if (vwap === null || vwap === undefined || rsi14 === null || rsi14 === undefined) {
     console.log("\n⚠  Not enough data to calculate indicators. Exiting.");
     return;
   }
@@ -691,7 +707,7 @@ async function run() {
 if (process.argv.includes("--tax-summary")) {
   generateTaxSummary();
 } else {
-  const INTERVAL_MS = 3 * 60 * 1000; // 3 minutos
+  const INTERVAL_MS = 1 * 60 * 1000; // 1 minuto
 
   // ── Status HTTP server (Railway expõe automaticamente) ───────────────────────
   import("http").then(({ default: http }) => {
