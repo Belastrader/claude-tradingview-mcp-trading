@@ -157,37 +157,81 @@ async function fetchTVAnalysis(symbol, interval = "3") {
 
 // ── Market Data ──────────────────────────────────────────────────────────────────
 
-async function fetchCandles(symbol, interval, limit = 100) {
-  // Binance global (primary) — much higher liquidity than Binance US.
-  // Fallback to Binance US if global is geo-blocked on the server.
-  // k[7] = quote asset volume (USDT) — more stable for volume filters than base currency
-  const endpoints = [
-    `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
-    `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+async function fetchCandles(symbol, interval, limit = 500) {
+  // Tentamos múltiplas fontes em ordem — a primeira que responder com dados válidos vence.
+  // Bybit e OKX funcionam em servidores dos EUA (Railway). Binance fica como último recurso.
+
+  // Bybit usa formato numérico: "1m"→"1", "15m"→"15", "1h"→"60"
+  const bybitInterval = interval.endsWith('h')
+    ? String(parseInt(interval) * 60)
+    : interval.replace('m', '');
+
+  // OKX usa o mesmo formato que o bot: "1m", "15m"
+  const okxSymbol = symbol.replace('USDT', '-USDT'); // BTCUSDT → BTC-USDT
+
+  const sources = [
+    // 1. Bybit — sem geo-restrições, alta liquidez em BTCUSDT perp
+    async () => {
+      const url = `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`Bybit HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.retCode !== 0) throw new Error(`Bybit: ${json.retMsg}`);
+      // Bybit retorna do mais recente para o mais antigo → inverter
+      // Formato: [startTime, open, high, low, close, volume(BTC), turnover(USDT)]
+      return json.result.list.reverse().map(k => ({
+        time: parseInt(k[0]),
+        open:   parseFloat(k[1]),
+        high:   parseFloat(k[2]),
+        low:    parseFloat(k[3]),
+        close:  parseFloat(k[4]),
+        volume: parseFloat(k[6]),  // turnover = volume em USDT
+      }));
+    },
+
+    // 2. OKX — exchange global, acessível em qualquer região
+    async () => {
+      const url = `https://www.okx.com/api/v5/market/candles?instId=${okxSymbol}&bar=${interval}&limit=${Math.min(limit, 300)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`OKX HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.code !== '0') throw new Error(`OKX: ${json.msg}`);
+      // OKX: [ts, o, h, l, c, vol(BTC), volCcy(BTC), volCcyQuote(USDT), confirm]  mais recente primeiro
+      return json.data.reverse().map(k => ({
+        time: parseInt(k[0]),
+        open:   parseFloat(k[1]),
+        high:   parseFloat(k[2]),
+        low:    parseFloat(k[3]),
+        close:  parseFloat(k[4]),
+        volume: parseFloat(k[7]),  // volCcyQuote = volume em USDT
+      }));
+    },
+
+    // 3. Binance global — pode ser bloqueada em servidores dos EUA
+    async () => {
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
+      const json = await res.json();
+      return json.map(k => ({
+        time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
+        low:  parseFloat(k[3]), close: parseFloat(k[4]),
+        volume: parseFloat(k[7]),  // quote volume em USDT
+      }));
+    },
   ];
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
+
   let lastErr;
-  try {
-    for (const url of endpoints) {
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
-        const json = await res.json();
-        // Use quote volume (k[7], in USDT) so the filter is meaningful regardless of asset price
-        return json.map((k) => ({
-          time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
-          low: parseFloat(k[3]), close: parseFloat(k[4]),
-          volume: parseFloat(k[7]),  // quote volume in USDT
-        }));
-      } catch (e) {
-        lastErr = e;
-      }
+  for (const source of sources) {
+    try {
+      const candles = await source();
+      if (candles && candles.length > 0) return candles;
+    } catch (e) {
+      lastErr = e;
+      console.log(`  [dados] fonte indisponivel: ${e.message}`);
     }
-    throw lastErr;
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastErr ?? new Error('Todas as fontes de dados falharam');
 }
 
 // ── Indicators ───────────────────────────────────────────────────────────────────
