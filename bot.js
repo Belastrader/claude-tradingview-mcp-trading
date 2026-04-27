@@ -112,8 +112,13 @@ function savePosition(pos) {
   writeFileSync(POSITION_FILE, JSON.stringify(pos, null, 2));
 }
 
-function clearPosition() {
-  savePosition({ open: false });
+const SL_COOLDOWN_MS = 20 * 60 * 1000; // 20 minutos após SL
+
+function clearPosition(exitReason = null) {
+  const cooldown = exitReason === 'SL_HIT'
+    ? { slCooldownUntil: Date.now() + SL_COOLDOWN_MS }
+    : {};
+  savePosition({ open: false, ...cooldown });
 }
 
 function calcPnlPct(direction, entryPrice, exitPrice) {
@@ -266,6 +271,24 @@ function calcVolumeAvg(candles, period = 20) {
   return recent.reduce((sum, c) => sum + c.volume, 0) / recent.length;
 }
 
+function calcATR(candles, period = 14) {
+  if (candles.length < period + 1) return null;
+  const recent = candles.slice(-(period + 1));
+  let trSum = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const high     = recent[i].high;
+    const low      = recent[i].low;
+    const prevClose = recent[i - 1].close;
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low  - prevClose)
+    );
+    trSum += tr;
+  }
+  return trSum / period;
+}
+
 function calcVWAP(candles) {
   const midnightUTC = new Date();
   midnightUTC.setUTCHours(0, 0, 0, 0);
@@ -280,7 +303,7 @@ function calcVWAP(candles) {
 
 // ── Safety Check ─────────────────────────────────────────────────────────────────
 
-function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, currentVolume, avgVolume) {
+function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, currentVolume, avgVolume, atr) {
   const bullishBias    = price > vwap;
   const bearishBias    = price < vwap;
   const emaUptrend     = ema8 > ema21;
@@ -293,6 +316,10 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
   const trend15mBear   = ema8_15m < ema21_15m;
   // v3: volume confirmation
   const volumeOk       = avgVolume > 0 && currentVolume >= avgVolume * 1.3;
+  // v4.4: ATR filter — bloqueia entradas em mercado lateral/choppy
+  // ATR(14) deve ser >= 0.12% do preco para garantir movimento direcional suficiente
+  const atrPct         = atr ? (atr / price) * 100 : 0;
+  const atrOk          = atr !== null && atrPct >= 0.12;
 
   let signal = "NEUTRAL";
   let reason = "";
@@ -309,10 +336,10 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
     {
       pass: emaUptrend || emaDowntrend,
       label: emaUptrend
-        ? `EMA3m uptrend: EMA8 ${ema8.toFixed(2)} > EMA21 ${ema21.toFixed(2)}`
+        ? `EMA1m uptrend: EMA8 ${ema8.toFixed(2)} > EMA21 ${ema21.toFixed(2)}`
         : emaDowntrend
-        ? `EMA3m downtrend: EMA8 ${ema8.toFixed(2)} < EMA21 ${ema21.toFixed(2)}`
-        : `EMA3m lateral: EMA8 == EMA21`,
+        ? `EMA1m downtrend: EMA8 ${ema8.toFixed(2)} < EMA21 ${ema21.toFixed(2)}`
+        : `EMA1m lateral: EMA8 == EMA21`,
     },
     {
       pass: (bullishBias && emaUptrend && rsiLong) || (bearishBias && emaDowntrend && rsiShort),
@@ -330,16 +357,22 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
       pass: volumeOk,
       label: `Volume USDT: $${currentVolume.toFixed(0)} vs media $${avgVolume.toFixed(0)} (min: $${(avgVolume*1.3).toFixed(0)})`,
     },
+    {
+      pass: atrOk,
+      label: atr
+        ? `ATR(14): $${atr.toFixed(1)} (${atrPct.toFixed(3)}% do preco${atrOk ? '' : ', min: 0.12% — mercado lateral'})`
+        : `ATR(14): dados insuficientes`,
+    },
   ];
 
   const allPass = results.every((r) => r.pass);
 
-  if (bullishBias && emaUptrend && rsiLong && trend15mBull && volumeOk) {
+  if (bullishBias && emaUptrend && rsiLong && trend15mBull && volumeOk && atrOk) {
     signal = "LONG";
-    reason = `LONG | VWAP bull | EMA3m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K`;
-  } else if (bearishBias && emaDowntrend && rsiShort && trend15mBear && volumeOk) {
+    reason = `LONG | VWAP bull | EMA1m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
+  } else if (bearishBias && emaDowntrend && rsiShort && trend15mBear && volumeOk && atrOk) {
     signal = "SHORT";
-    reason = `SHORT | VWAP bear | EMA3m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K`;
+    reason = `SHORT | VWAP bear | EMA1m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
   } else {
     const failed = results.filter((r) => !r.pass).map((r) => r.label);
     reason = "NEUTRO | " + failed.join(" | ");
@@ -624,6 +657,7 @@ async function run() {
   const rsi14       = calcRSI(closes);
   const avgVolume   = calcVolumeAvg(candles, 20);
   const curVolume   = candles[candles.length - 1].volume;
+  const atr         = calcATR(candles, 14);
 
   const trend15m = ema8_15m > ema21_15m ? "ALTA" : "BAIXA";
 
@@ -635,6 +669,7 @@ async function run() {
   console.log(`  Tendencia 15m: ${trend15m} (EMA8=${ema8_15m.toFixed(2)} EMA21=${ema21_15m.toFixed(2)})`);
   const fmtVol = (v) => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v/1e3).toFixed(1)}K` : `$${v.toFixed(0)}`;
   console.log(`  Volume atual (USDT): ${fmtVol(curVolume)} | Media 20c: ${fmtVol(avgVolume)}`);
+  console.log(`  ATR(14):      ${atr ? `$${atr.toFixed(1)} (${((atr/price)*100).toFixed(3)}%)` : 'N/A'}`);
   console.log(`  TradingView:  ${tvSignal}`);
 
   if (vwap === null || vwap === undefined || rsi14 === null || rsi14 === undefined) {
@@ -644,7 +679,7 @@ async function run() {
 
   // Run safety check
   const { results, allPass, signal, reason } = runSafetyCheck(
-    price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, curVolume, avgVolume
+    price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, curVolume, avgVolume, atr
   );
 
   console.log("\n── Decision ─────────────────────────────────────────────────\n");
@@ -693,13 +728,23 @@ async function run() {
         }
       }
       writeExitCsv(position, exitPrice, exitReason, CONFIG.paperTrading);
-      clearPosition();
+      clearPosition(exitReason);
     } else {
       console.log(`\n  Posicao mantida. Aguardando TP/SL.`);
     }
 
   } else {
     // ── No open position: look for entry ──────────────────────────────────────
+
+    // v4.4: cooldown após SL — aguarda 20 minutos antes de nova entrada
+    const savedPos = loadPosition();
+    if (savedPos.slCooldownUntil && Date.now() < savedPos.slCooldownUntil) {
+      const remainingMin = Math.ceil((savedPos.slCooldownUntil - Date.now()) / 60000);
+      console.log(`\n⏳ COOLDOWN POS-SL: aguardando ${remainingMin}min antes de nova entrada (proteção anti-chop)`);
+      console.log("\n================================================\n");
+      return;
+    }
+
     const withinLimits = checkTradeLimits(log);
     if (!withinLimits) return;
 

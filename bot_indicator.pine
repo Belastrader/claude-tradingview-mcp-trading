@@ -1,19 +1,31 @@
 //@version=5
-indicator("BTC Momentum Bot v4", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("BTC Momentum Bot v4.4", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // ──────────────────────────────────────────────────────────────
 //  INPUTS
 // ──────────────────────────────────────────────────────────────
-tp_pct        = input.float(0.8, "Take Profit (%)", minval=0.1, step=0.1, group="Saida") / 100
-sl_pct        = input.float(0.4, "Stop Loss (%)", minval=0.1, step=0.1, group="Saida") / 100
-vol_mult      = input.float(1.3, "Volume minimo (x media 20c)", minval=1.0, step=0.1, group="Filtros")
-rsi_long_min  = input.int(50, "RSI Long - min", minval=30, maxval=70, group="Filtros")
-rsi_long_max  = input.int(65, "RSI Long - max", minval=30, maxval=80, group="Filtros")
-rsi_short_min = input.int(35, "RSI Short - min", minval=20, maxval=50, group="Filtros")
-rsi_short_max = input.int(50, "RSI Short - max", minval=30, maxval=70, group="Filtros")
-show_emas     = input.bool(true, "Mostrar EMAs", group="Visual")
-show_vwap     = input.bool(true, "Mostrar VWAP", group="Visual")
-show_bg       = input.bool(true, "Fundo colorido (tendencia 15m)", group="Visual")
+tp_pct        = input.float(0.8,  "Take Profit (%)",             minval=0.1, step=0.1, group="Saida") / 100
+sl_pct        = input.float(0.4,  "Stop Loss (%)",               minval=0.1, step=0.1, group="Saida") / 100
+vol_mult      = input.float(1.3,  "Volume minimo (x media 20c)", minval=1.0, step=0.1, group="Filtros")
+atr_min_pct   = input.float(0.12, "ATR minimo (% do preco)",      minval=0.05, step=0.01, group="Filtros")
+rsi_long_min  = input.int(50,  "RSI Long - min",  minval=30, maxval=70, group="Filtros")
+rsi_long_max  = input.int(65,  "RSI Long - max",  minval=30, maxval=80, group="Filtros")
+rsi_short_min = input.int(35,  "RSI Short - min", minval=20, maxval=50, group="Filtros")
+rsi_short_max = input.int(50,  "RSI Short - max", minval=30, maxval=70, group="Filtros")
+use_bybit_vol = input.bool(true,  "Volume Bybit USDT (recomendado)", group="Filtros")
+show_emas     = input.bool(true,  "Mostrar EMAs",                group="Visual")
+show_vwap     = input.bool(true,  "Mostrar VWAP",                group="Visual")
+show_bg       = input.bool(true,  "Fundo colorido (tendencia 15m)", group="Visual")
+
+// ──────────────────────────────────────────────────────────────
+//  AVISO DE TIMEFRAME
+//  O bot analisa velas de 1m — use o grafico em 1m para fidelidade maxima
+// ──────────────────────────────────────────────────────────────
+wrong_tf = timeframe.period != "1"
+if wrong_tf and barstate.islast
+    label.new(bar_index, high, "⚠ Use o grafico em 1m\npara espelhar o bot",
+              yloc=yloc.abovebar, color=color.new(color.orange, 10),
+              textcolor=color.white, style=label.style_label_down, size=size.small)
 
 // ──────────────────────────────────────────────────────────────
 //  INDICADORES
@@ -21,24 +33,35 @@ show_bg       = input.bool(true, "Fundo colorido (tendencia 15m)", group="Visual
 ema8     = ta.ema(close, 8)
 ema21    = ta.ema(close, 21)
 rsi14    = ta.rsi(close, 14)
+atr14    = ta.atr(14)
+atr_pct  = (atr14 / close) * 100
 vwap_val = ta.vwap
 vol_avg  = ta.sma(volume, 20)
 
-ema8_15m  = request.security(syminfo.tickerid, "15", ta.ema(close, 8), lookahead=barmerge.lookahead_off)
+// Volume: Bybit USDT (espelha o bot) ou volume nativo do grafico
+bybit_vol     = request.security("BYBIT:BTCUSDT.P", timeframe.period, volume, lookahead=barmerge.lookahead_off)
+bybit_vol_avg = request.security("BYBIT:BTCUSDT.P", timeframe.period, ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
+cur_vol       = use_bybit_vol ? bybit_vol     : volume
+cur_vol_avg   = use_bybit_vol ? bybit_vol_avg : vol_avg
+
+// Filtro de tendencia 15m (igual ao bot)
+ema8_15m  = request.security(syminfo.tickerid, "15", ta.ema(close, 8),  lookahead=barmerge.lookahead_off)
 ema21_15m = request.security(syminfo.tickerid, "15", ta.ema(close, 21), lookahead=barmerge.lookahead_off)
 trend_bull = ema8_15m > ema21_15m
 trend_bear = ema8_15m < ema21_15m
 
 // ──────────────────────────────────────────────────────────────
-//  CONDICOES DE ENTRADA
+//  CONDICOES DE ENTRADA  (identicas ao runSafetyCheck do bot)
 // ──────────────────────────────────────────────────────────────
 bull_bias    = close > vwap_val
 bear_bias    = close < vwap_val
-vol_ok       = volume >= vol_avg * vol_mult
-rsi_long_ok  = rsi14 >= rsi_long_min and rsi14 <= rsi_long_max
+vol_ok       = cur_vol >= cur_vol_avg * vol_mult
+atr_ok       = atr_pct >= atr_min_pct
+rsi_long_ok  = rsi14 >= rsi_long_min  and rsi14 <= rsi_long_max
 rsi_short_ok = rsi14 >= rsi_short_min and rsi14 <= rsi_short_max
-long_cond    = bull_bias and ema8 > ema21 and trend_bull and rsi_long_ok and vol_ok
-short_cond   = bear_bias and ema8 < ema21 and trend_bear and rsi_short_ok and vol_ok
+
+long_cond  = bull_bias and ema8 > ema21 and trend_bull and rsi_long_ok  and vol_ok and atr_ok
+short_cond = bear_bias and ema8 < ema21 and trend_bear and rsi_short_ok and vol_ok and atr_ok
 
 // ──────────────────────────────────────────────────────────────
 //  SIMULADOR DE ESTADO
@@ -54,8 +77,8 @@ cur_dir  = pos_dir
 cur_tp   = pos_tp
 cur_sl   = pos_sl
 
-hit_tp = was_open and ((cur_dir == "LONG" and close >= cur_tp) or (cur_dir == "SHORT" and close <= cur_tp))
-hit_sl = was_open and ((cur_dir == "LONG" and close <= cur_sl) or (cur_dir == "SHORT" and close >= cur_sl))
+hit_tp = was_open and ((cur_dir == "LONG"  and close >= cur_tp) or (cur_dir == "SHORT" and close <= cur_tp))
+hit_sl = was_open and ((cur_dir == "LONG"  and close <= cur_sl) or (cur_dir == "SHORT" and close >= cur_sl))
 
 if hit_tp or hit_sl
     pos_open  := false
@@ -75,8 +98,9 @@ if sim_long
     pos_entry := close
     pos_tp    := tp_l
     pos_sl    := sl_l
-    // Label compacto — so direcao e preco de entrada
-    label.new(bar_index, low, "LONG\n$" + str.tostring(close, "#.0"), yloc=yloc.belowbar, color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    label.new(bar_index, low, "LONG\n$" + str.tostring(close, "#.0"),
+              yloc=yloc.belowbar, color=color.new(color.green, 0),
+              textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
 if sim_short
     tp_s = close * (1 - tp_pct)
@@ -86,30 +110,31 @@ if sim_short
     pos_entry := close
     pos_tp    := tp_s
     pos_sl    := sl_s
-    // Label compacto — so direcao e preco de entrada
-    label.new(bar_index, high, "SHORT\n$" + str.tostring(close, "#.0"), yloc=yloc.abovebar, color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    label.new(bar_index, high, "SHORT\n$" + str.tostring(close, "#.0"),
+              yloc=yloc.abovebar, color=color.new(color.red, 0),
+              textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
 // ──────────────────────────────────────────────────────────────
 //  SAIDAS
 // ──────────────────────────────────────────────────────────────
 if hit_tp and cur_dir == "LONG"
-    label.new(bar_index, high, "TP", yloc=yloc.abovebar, color=color.lime, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+    label.new(bar_index, high, "TP", yloc=yloc.abovebar, color=color.lime,        textcolor=color.black, style=label.style_label_down, size=size.tiny)
 if hit_tp and cur_dir == "SHORT"
-    label.new(bar_index, low, "TP", yloc=yloc.belowbar, color=color.lime, textcolor=color.black, style=label.style_label_up, size=size.tiny)
+    label.new(bar_index, low,  "TP", yloc=yloc.belowbar, color=color.lime,        textcolor=color.black, style=label.style_label_up,   size=size.tiny)
 if hit_sl and cur_dir == "LONG"
-    label.new(bar_index, low, "SL", yloc=yloc.belowbar, color=color.red, textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    label.new(bar_index, low,  "SL", yloc=yloc.belowbar, color=color.red,         textcolor=color.white, style=label.style_label_up,   size=size.tiny)
 if hit_sl and cur_dir == "SHORT"
-    label.new(bar_index, high, "SL", yloc=yloc.abovebar, color=color.red, textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    label.new(bar_index, high, "SL", yloc=yloc.abovebar, color=color.red,         textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
 // ──────────────────────────────────────────────────────────────
-//  LINHAS TP / SL / ENTRADA — plot() garante preco correto sempre
+//  LINHAS TP / SL / ENTRADA
 // ──────────────────────────────────────────────────────────────
 plot(pos_open ? pos_tp    : na, "TP",      color=color.new(color.green, 0),  linewidth=1, style=plot.style_linebr)
 plot(pos_open ? pos_sl    : na, "SL",      color=color.new(color.red,   0),  linewidth=1, style=plot.style_linebr)
 plot(pos_open ? pos_entry : na, "Entrada", color=color.new(color.gray,  30), linewidth=1, style=plot.style_linebr)
 
 // ──────────────────────────────────────────────────────────────
-//  INDICADORES BASE
+//  INDICADORES VISUAIS
 // ──────────────────────────────────────────────────────────────
 plot(show_emas ? ema8  : na, "EMA 8",  color=color.new(color.blue,   0), linewidth=2)
 plot(show_emas ? ema21 : na, "EMA 21", color=color.new(color.orange, 0), linewidth=2)
@@ -121,48 +146,79 @@ bgcolor(bg_col, title="Tendencia 15m")
 // ──────────────────────────────────────────────────────────────
 //  PAINEL DE STATUS
 // ──────────────────────────────────────────────────────────────
-var table painel = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 60), border_color=color.new(color.gray, 50), border_width=1, frame_color=color.new(color.gray, 30), frame_width=1)
+var table painel = table.new(position.top_right, 2, 13,
+     bgcolor=color.new(color.black, 60),
+     border_color=color.new(color.gray, 50), border_width=1,
+     frame_color=color.new(color.gray, 30),  frame_width=1)
 
 if barstate.islast
-    ema3m_s  = ema8 > ema21 ? "ALTA" : "BAIXA"
-    ema3m_c  = ema8 > ema21 ? color.green : color.red
-    ema15m_s = trend_bull ? "ALTA" : "BAIXA"
-    ema15m_c = trend_bull ? color.green : color.red
-    vwap_s   = close > vwap_val ? "acima" : "abaixo"
+    tf_label  = timeframe.period == "1" ? "1m ✓" : timeframe.period + " ⚠"
+    tf_color  = timeframe.period == "1" ? color.green : color.orange
+
+    ema1m_s  = ema8 > ema21 ? "ALTA"   : "BAIXA"
+    ema1m_c  = ema8 > ema21 ? color.green : color.red
+    ema15m_s = trend_bull   ? "ALTA"   : "BAIXA"
+    ema15m_c = trend_bull   ? color.green : color.red
+    vwap_s   = close > vwap_val ? "acima"  : "abaixo"
     vwap_c   = close > vwap_val ? color.green : color.red
-    rsi_z    = rsi_long_ok ? "zona LONG" : rsi_short_ok ? "zona SHORT" : rsi14 < rsi_short_min ? "oversold" : rsi14 > rsi_long_max ? "overbought" : "neutro"
+    rsi_z    = rsi_long_ok  ? "zona LONG"  :
+               rsi_short_ok ? "zona SHORT" :
+               rsi14 < rsi_short_min ? "oversold" :
+               rsi14 > rsi_long_max  ? "overbought" : "neutro"
     rsi_c    = (rsi_long_ok or rsi_short_ok) ? color.green : color.orange
     vol_s    = vol_ok ? "forte" : "fraco"
     vol_c    = vol_ok ? color.green : color.red
-    cond_s   = long_cond ? "LONG ok" : short_cond ? "SHORT ok" : "AGUARDANDO"
-    cond_c   = long_cond ? color.green : short_cond ? color.red : color.gray
-    pos_s    = pos_open ? pos_dir + " @ $" + str.tostring(pos_entry, "#.0") : "sem posicao"
-    pos_c    = pos_open ? (pos_dir == "LONG" ? color.green : color.red) : color.gray
-    tp_s     = pos_open ? str.tostring(pos_tp, "#.0") : "—"
-    tp_c     = color.green
-    sl_s     = pos_open ? str.tostring(pos_sl, "#.0") : "—"
-    sl_c     = color.red
+    atr_s    = atr_ok ? str.tostring(atr14, "#.0") + " (" + str.tostring(atr_pct, "#.3") + "%)" : str.tostring(atr14, "#.0") + " — lateral"
+    atr_c    = atr_ok ? color.green : color.red
+    cond_s   = long_cond  ? "LONG ok"  : short_cond ? "SHORT ok" : "AGUARDANDO"
+    cond_c   = long_cond  ? color.green : short_cond ? color.red  : color.gray
+    pos_s    = pos_open   ? pos_dir + " @ $" + str.tostring(pos_entry, "#.0") : "sem posicao"
+    pos_c    = pos_open   ? (pos_dir == "LONG" ? color.green : color.red) : color.gray
+    tp_s     = pos_open   ? str.tostring(pos_tp, "#.0") : "—"
+    sl_s     = pos_open   ? str.tostring(pos_sl, "#.0") : "—"
 
-    table.cell(painel, 0, 0, "BOT v4",     text_color=color.white, bgcolor=color.new(color.navy, 20), text_size=size.small, text_halign=text.align_center)
-    table.cell(painel, 1, 0, "BTCUSDT 3m", text_color=color.white, bgcolor=color.new(color.navy, 20), text_size=size.small, text_halign=text.align_center)
-    table.cell(painel, 0, 1, "EMA 3m",     text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 1, ema3m_s,      text_color=ema3m_c, text_size=size.tiny)
-    table.cell(painel, 0, 2, "Tend. 15m",  text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 2, ema15m_s,     text_color=ema15m_c, text_size=size.tiny)
-    table.cell(painel, 0, 3, "VWAP",       text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 3, vwap_s,       text_color=vwap_c, text_size=size.tiny)
-    table.cell(painel, 0, 4, "RSI " + str.tostring(rsi14, "#.#"), text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 4, rsi_z,        text_color=rsi_c, text_size=size.tiny)
-    table.cell(painel, 0, 5, "Volume",     text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 5, vol_s,        text_color=vol_c, text_size=size.tiny)
-    table.cell(painel, 0, 6, "Condicoes",  text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 6, cond_s,       text_color=cond_c, text_size=size.tiny)
-    table.cell(painel, 0, 7, "Posicao",    text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 7, pos_s,        text_color=pos_c, text_size=size.tiny, text_halign=text.align_center)
-    table.cell(painel, 0, 8, "TP",         text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 8, tp_s,         text_color=tp_c, text_size=size.tiny, text_halign=text.align_center)
-    table.cell(painel, 0, 9, "SL",         text_color=color.gray, text_size=size.tiny)
-    table.cell(painel, 1, 9, sl_s,         text_color=sl_c, text_size=size.tiny, text_halign=text.align_center)
+    // Linha 0: cabecalho
+    table.cell(painel, 0, 0,  "BOT v4.4",       text_color=color.white,  bgcolor=color.new(color.navy, 20), text_size=size.small, text_halign=text.align_center)
+    table.cell(painel, 1, 0,  "BTCUSDT 1m",      text_color=color.white,  bgcolor=color.new(color.navy, 20), text_size=size.small, text_halign=text.align_center)
+    // Linha 1: timeframe do grafico
+    table.cell(painel, 0, 1,  "Grafico",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 1,  tf_label,          text_color=tf_color,     text_size=size.tiny)
+    // Linha 2: EMA 1m
+    table.cell(painel, 0, 2,  "EMA 1m",          text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 2,  ema1m_s,           text_color=ema1m_c,      text_size=size.tiny)
+    // Linha 3: Tendencia 15m
+    table.cell(painel, 0, 3,  "Tend. 15m",       text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 3,  ema15m_s,          text_color=ema15m_c,     text_size=size.tiny)
+    // Linha 4: VWAP
+    table.cell(painel, 0, 4,  "VWAP",            text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 4,  vwap_s,            text_color=vwap_c,       text_size=size.tiny)
+    // Linha 5: RSI
+    table.cell(painel, 0, 5,  "RSI " + str.tostring(rsi14, "#.#"), text_color=color.gray, text_size=size.tiny)
+    table.cell(painel, 1, 5,  rsi_z,             text_color=rsi_c,        text_size=size.tiny)
+    // Linha 6: Volume
+    table.cell(painel, 0, 6,  "Volume",          text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 6,  vol_s,             text_color=vol_c,        text_size=size.tiny)
+    // Linha 7: ATR
+    table.cell(painel, 0, 7,  "ATR(14)",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 7,  atr_s,             text_color=atr_c,        text_size=size.tiny)
+    // Linha 8: Condicoes
+    table.cell(painel, 0, 8,  "Condicoes",       text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 8,  cond_s,            text_color=cond_c,       text_size=size.tiny)
+    // Linha 9: Posicao
+    table.cell(painel, 0, 9,  "Posicao",         text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 9,  pos_s,             text_color=pos_c,        text_size=size.tiny, text_halign=text.align_center)
+    // Linha 10: TP
+    table.cell(painel, 0, 10, "TP",              text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 10, tp_s,              text_color=color.green,  text_size=size.tiny, text_halign=text.align_center)
+    // Linha 11: SL
+    table.cell(painel, 0, 11, "SL",              text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 11, sl_s,              text_color=color.red,    text_size=size.tiny, text_halign=text.align_center)
+    // Linha 12: Cooldown info
+    table.cell(painel, 0, 12, "Anti-chop",       text_color=color.gray,   text_size=size.tiny)
+    table.cell(painel, 1, 12, "ATR+Cooldown",    text_color=color.new(color.blue, 30), text_size=size.tiny)
 
+// ──────────────────────────────────────────────────────────────
+//  ALERTAS
+// ──────────────────────────────────────────────────────────────
 alertcondition(sim_long,  "BOT LONG",  '{"action":"long","symbol":"BTCUSDT","price":"{{close}}"}')
 alertcondition(sim_short, "BOT SHORT", '{"action":"short","symbol":"BTCUSDT","price":"{{close}}"}')
