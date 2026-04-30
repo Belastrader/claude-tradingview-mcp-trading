@@ -63,7 +63,7 @@ function checkOnboarding() { if (process.env.BITGET_API_KEY) return;
 
 const CONFIG = {
   symbol:          process.env.SYMBOL || "BTCUSDT",
-  timeframe:       process.env.TIMEFRAME || "3m",
+  timeframe:       process.env.TIMEFRAME || "5m",
   portfolioValue:  parseFloat(process.env.PORTFOLIO_VALUE_USD || "1000"),
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "100"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "3"),
