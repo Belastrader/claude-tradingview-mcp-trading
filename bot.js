@@ -12,6 +12,13 @@
  *  - 15m higher-timeframe trend filter (only trade WITH the 15m trend)
  *  - Volume confirmation (entry only on volume > 1.3x 20-candle avg)
  *  - Tighter RSI zones: LONG 50-65, SHORT 35-50
+ *
+ * v4.6 optimizations (council analysis 2026-04-30):
+ *  - EMA8 direction filter: price > EMA8 for LONG, price < EMA8 for SHORT (reduz SIGNAL_REVERSE)
+ *  - Volume threshold: 1.3x → 1.1x avg (mais trades válidos)
+ *  - RSI zones expanded: LONG 45-70, SHORT 30-55 (captura mais momentum real)
+ *  - TP: 0.8% → 1.0%, SL: 0.4% → 0.5% (R/R 2:1 mantido, melhora EV)
+ *  - Volume momentum: confirma que último candle > média (qualidade do setup)
  */
 
 import "dotenv/config";
@@ -308,14 +315,17 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
   const bearishBias    = price < vwap;
   const emaUptrend     = ema8 > ema21;
   const emaDowntrend   = ema8 < ema21;
-  // v3: tighter RSI zones — above/below midpoint confirms momentum direction
-  const rsiLong        = rsi14 >= 50 && rsi14 <= 65;
-  const rsiShort       = rsi14 >= 35 && rsi14 <= 50;
+  // v4.6: expanded RSI zones (captura mais momentum real)
+  const rsiLong        = rsi14 >= 45 && rsi14 <= 70;  // era 50-65
+  const rsiShort       = rsi14 >= 30 && rsi14 <= 55;  // era 35-50
   // v3: 15m trend filter
   const trend15mBull   = ema8_15m > ema21_15m;
   const trend15mBear   = ema8_15m < ema21_15m;
-  // v3: volume confirmation
-  const volumeOk       = avgVolume > 0 && currentVolume >= avgVolume * 1.3;
+  // v4.6: volume threshold reduzido 1.3x→1.1x (mais trades válidos) + confirmação direcional
+  const volumeOk       = avgVolume > 0 && currentVolume >= avgVolume * 1.1 && currentVolume > avgVolume;
+  // v4.6: EMA8 direction filter — price must be on the correct side of EMA8 (reduz SIGNAL_REVERSE)
+  const ema8DirectionOkLong  = price > ema8;
+  const ema8DirectionOkShort = price < ema8;
   // v4.4: ATR filter — bloqueia entradas em mercado lateral/choppy
   // ATR(14) deve ser >= 0.12% do preco para garantir movimento direcional suficiente
   const atrPct         = atr ? (atr / price) * 100 : 0;
@@ -343,7 +353,7 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
     },
     {
       pass: (bullishBias && emaUptrend && rsiLong) || (bearishBias && emaDowntrend && rsiShort),
-      label: `RSI14 ${rsi14.toFixed(1)}` + (bullishBias ? " (zona alvo: 50-65)" : " (zona alvo: 35-50)"),
+      label: `RSI14 ${rsi14.toFixed(1)}` + (bullishBias ? " (zona alvo: 45-70)" : " (zona alvo: 30-55)"),
     },
     {
       pass: (bullishBias && trend15mBull) || (bearishBias && trend15mBear),
@@ -355,7 +365,13 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
     },
     {
       pass: volumeOk,
-      label: `Volume USDT: $${currentVolume.toFixed(0)} vs media $${avgVolume.toFixed(0)} (min: $${(avgVolume*1.3).toFixed(0)})`,
+      label: `Volume USDT: $${currentVolume.toFixed(0)} vs media $${avgVolume.toFixed(0)} (min: $${(avgVolume*1.1).toFixed(0)})`,
+    },
+    {
+      pass: (bullishBias && ema8DirectionOkLong) || (bearishBias && ema8DirectionOkShort),
+      label: bullishBias
+        ? `EMA8 direction: preco ${price.toFixed(2)} ${price > ema8 ? ">" : "<"} EMA8 ${ema8.toFixed(2)} (LONG requer > EMA8)`
+        : `EMA8 direction: preco ${price.toFixed(2)} ${price < ema8 ? "<" : ">"} EMA8 ${ema8.toFixed(2)} (SHORT requer < EMA8)`,
     },
     {
       pass: atrOk,
@@ -367,12 +383,12 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
 
   const allPass = results.every((r) => r.pass);
 
-  if (bullishBias && emaUptrend && rsiLong && trend15mBull && volumeOk && atrOk) {
+  if (bullishBias && emaUptrend && ema8DirectionOkLong && rsiLong && trend15mBull && volumeOk && atrOk) {
     signal = "LONG";
-    reason = `LONG | VWAP bull | EMA1m bull | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
-  } else if (bearishBias && emaDowntrend && rsiShort && trend15mBear && volumeOk && atrOk) {
+    reason = `LONG | VWAP bull | EMA1m bull | preco>EMA8 | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
+  } else if (bearishBias && emaDowntrend && ema8DirectionOkShort && rsiShort && trend15mBear && volumeOk && atrOk) {
     signal = "SHORT";
-    reason = `SHORT | VWAP bear | EMA1m bear | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
+    reason = `SHORT | VWAP bear | EMA1m bear | preco<EMA8 | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
   } else {
     const failed = results.filter((r) => !r.pass).map((r) => r.label);
     reason = "NEUTRO | " + failed.join(" | ");
@@ -818,7 +834,7 @@ if (process.argv.includes("--tax-summary")) {
         const blocked = entries.filter(t => !t.orderPlaced);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          version: "v3",
+          version: "v4.6",
           uptime: process.uptime(),
           position: pos,
           totalAnalyses: entries.length,
@@ -828,7 +844,7 @@ if (process.argv.includes("--tax-summary")) {
         }, null, 2));
       } else {
         res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("trading-bot v3 online\nEndpoints: /trades /status");
+        res.end("trading-bot v4.6 online\nEndpoints: /trades /status");
       }
     }).listen(PORT, () => console.log(`📡 Status server on :${PORT}`));
   });

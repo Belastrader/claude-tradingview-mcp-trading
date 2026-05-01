@@ -1,47 +1,49 @@
 {
   "watchlist": ["BTCUSDT"],
-  "default_timeframe": "3m",
+  "default_timeframe": "5m",
   "strategy": {
-    "name": "BTC Momentum Quantitativo v4",
-    "sources": ["Custom quant — EMA cross + VWAP + 15m trend filter + volume"],
-    "description": "v4: migrado para BTC após backtest mostrar ETH com 0% win rate e BTC com 100% nas últimas 25h. TP ajustado para 0.8% e SL para 0.4% (R/R 2:1 mantido) pois BTC no 3m raramente atinge 1% em menos de 90 minutos. Filtros v3 mantidos: tendência 15m, volume 1.3x média, RSI 50-65/35-50."
+    "name": "BTC Momentum Quantitativo v4.6",
+    "sources": ["Custom quant — EMA cross + VWAP + EMA8 direction + 15m trend filter + volume momentum"],
+    "description": "v4.6: otimizações do conselho 2026-04-30. Filtro EMA8 direcional adicionado (preco>EMA8 para LONG, preco<EMA8 para SHORT) para reduzir SIGNAL_REVERSE. Volume threshold reduzido de 1.3x para 1.1x para capturar mais setups válidos. RSI zones expandidas: LONG 45-70, SHORT 30-55. TP aumentado de 0.8% para 1.0%, SL de 0.4% para 0.5% (R/R 2:1 mantido)."
   },
   "indicators": {
-    "ema_8_3m":  "Tendência rápida no 3m.",
-    "ema_21_3m": "Tendência de curto prazo no 3m.",
+    "ema_8_5m":  "Tendência rápida no 5m. Preço deve estar acima (LONG) ou abaixo (SHORT).",
+    "ema_21_5m": "Tendência de curto prazo no 5m.",
     "ema_8_15m": "Tendência rápida no 15m — filtro de trend maior.",
     "ema_21_15m":"Tendência de médio prazo no 15m.",
-    "rsi_14":    "Filtro de momentum. Zona 50-65 para long. Zona 35-50 para short.",
+    "rsi_14":    "Filtro de momentum. Zona 45-70 para long. Zona 30-55 para short.",
     "vwap":      "Filtro de viés intraday.",
-    "volume":    "Confirmação. Mínimo 1.3x média dos últimos 20 candles."
+    "volume":    "Confirmação direcional. Mínimo 1.1x média dos últimos 20 candles E último candle > média."
   },
   "entry_rules": {
     "long": [
       "Preço acima do VWAP",
-      "EMA(8) 3m acima da EMA(21) 3m",
+      "EMA(8) 5m acima da EMA(21) 5m",
+      "Preço acima da EMA(8) 5m (filtro direcional v4.6)",
       "EMA(8) 15m acima da EMA(21) 15m",
-      "RSI(14) entre 50 e 65",
-      "Volume >= 1.3x média dos últimos 20 candles"
+      "RSI(14) entre 45 e 70",
+      "Volume >= 1.1x média dos últimos 20 candles E último candle > média"
     ],
     "short": [
       "Preço abaixo do VWAP",
-      "EMA(8) 3m abaixo da EMA(21) 3m",
+      "EMA(8) 5m abaixo da EMA(21) 5m",
+      "Preço abaixo da EMA(8) 5m (filtro direcional v4.6)",
       "EMA(8) 15m abaixo da EMA(21) 15m",
-      "RSI(14) entre 35 e 50",
-      "Volume >= 1.3x média dos últimos 20 candles"
+      "RSI(14) entre 30 e 55",
+      "Volume >= 1.1x média dos últimos 20 candles E último candle > média"
     ]
   },
   "exit_rules": [
-    "Take profit: +0.8% (ajustado para BTC/3m)",
-    "Stop loss: -0.4%",
+    "Take profit: +1.0% (aumentado de 0.8% — melhora EV)",
+    "Stop loss: -0.5% (ajustado de 0.4%)",
     "R/R: 2:1 — sem saída por sinal reverso"
   ],
   "risk_rules": [
     "Risco máximo de 1% do portfólio por operação",
     "Manter PAPER_TRADING=true até validar a estratégia"
   ],
-  "notes": "v4: BTC > ETH para esta estratégia. Backtest 25h: ETH -3% (6 SL, 0 TP), BTC +1% (1 TP, 0 SL). TP/SL menores para se adequar ao ritmo do BTC no 3m.",
-  "take_profit_pct": 0.008,
-  "stop_loss_pct": 0.004,
+  "notes": "v4.6: baseado em análise do conselho após Semana 1. Principal problema identificado: SIGNAL_REVERSE. Solução: filtro EMA8 direcional. Volume threshold reduzido para permitir mais trades. RSI zones expandidas para capturar mais momentum. TP/SL ajustados para melhorar EV.",
+  "take_profit_pct": 0.010,
+  "stop_loss_pct": 0.005,
   "risk_reward_ratio": 2.0
 }
