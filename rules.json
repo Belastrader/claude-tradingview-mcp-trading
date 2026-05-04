@@ -2,9 +2,9 @@
   "watchlist": ["BTCUSDT"],
   "default_timeframe": "5m",
   "strategy": {
-    "name": "BTC Momentum Quantitativo v4.6",
-    "sources": ["Custom quant — EMA cross + VWAP + EMA8 direction + 15m trend filter + volume momentum"],
-    "description": "v4.6: otimizações do conselho 2026-04-30. Filtro EMA8 direcional adicionado (preco>EMA8 para LONG, preco<EMA8 para SHORT) para reduzir SIGNAL_REVERSE. Volume threshold reduzido de 1.3x para 1.1x para capturar mais setups válidos. RSI zones expandidas: LONG 45-70, SHORT 30-55. TP aumentado de 0.8% para 1.0%, SL de 0.4% para 0.5% (R/R 2:1 mantido)."
+    "name": "BTC Momentum Quantitativo v4.7",
+    "sources": ["Custom quant — EMA cross + VWAP + EMA8 direction + 15m trend filter + volume momentum + ADX trend filter + circuit breaker + time filter"],
+    "description": "v4.7: otimizações do conselho 2026-05-03. ADX(14) >= 20 adicionado para bloquear entradas em mercado lateral/choppy. Circuit breaker: pausa 6h após 4 SL_HITs consecutivos. Filtro horário: bloqueia 00h-06h UTC (baixa liquidez). ATR mínimo aumentado 0.12% → 0.18%. TP aumentado de 1.0% para 1.5% (R/R 3:1). SL mantido em 0.5%."
   },
   "indicators": {
     "ema_8_5m":  "Tendência rápida no 5m. Preço deve estar acima (LONG) ou abaixo (SHORT).",
@@ -13,7 +13,9 @@
     "ema_21_15m":"Tendência de médio prazo no 15m.",
     "rsi_14":    "Filtro de momentum. Zona 45-70 para long. Zona 30-55 para short.",
     "vwap":      "Filtro de viés intraday.",
-    "volume":    "Confirmação direcional. Mínimo 1.1x média dos últimos 20 candles E último candle > média."
+    "volume":    "Confirmação direcional. Mínimo 1.1x média dos últimos 20 candles E último candle > média.",
+    "atr_14":    "Filtro de volatilidade. Mínimo 0.18% do preço — bloqueia mercado lateral.",
+    "adx_14":    "Filtro de força de tendência (v4.7). ADX >= 20 obrigatório. < 20 = mercado lateral/choppy — sem entrada."
   },
   "entry_rules": {
     "long": [
@@ -22,7 +24,9 @@
       "Preço acima da EMA(8) 5m (filtro direcional v4.6)",
       "EMA(8) 15m acima da EMA(21) 15m",
       "RSI(14) entre 45 e 70",
-      "Volume >= 1.1x média dos últimos 20 candles E último candle > média"
+      "Volume >= 1.1x média dos últimos 20 candles E último candle > média",
+      "ATR(14) >= 0.18% do preço",
+      "ADX(14) >= 20 (tendência presente — v4.7)"
     ],
     "short": [
       "Preço abaixo do VWAP",
@@ -30,20 +34,24 @@
       "Preço abaixo da EMA(8) 5m (filtro direcional v4.6)",
       "EMA(8) 15m abaixo da EMA(21) 15m",
       "RSI(14) entre 30 e 55",
-      "Volume >= 1.1x média dos últimos 20 candles E último candle > média"
+      "Volume >= 1.1x média dos últimos 20 candles E último candle > média",
+      "ATR(14) >= 0.18% do preço",
+      "ADX(14) >= 20 (tendência presente — v4.7)"
     ]
   },
   "exit_rules": [
-    "Take profit: +1.0% (aumentado de 0.8% — melhora EV)",
-    "Stop loss: -0.5% (ajustado de 0.4%)",
-    "R/R: 2:1 — sem saída por sinal reverso"
+    "Take profit: +1.5% (aumentado de 1.0% — R/R 3:1)",
+    "Stop loss: -0.5% (mantido)",
+    "R/R: 3:1 — sem saída por sinal reverso"
   ],
   "risk_rules": [
     "Risco máximo de 1% do portfólio por operação",
+    "Circuit breaker: pausa 6h após 4 SL_HITs consecutivos (v4.7)",
+    "Filtro horário: sem entradas 00h-06h UTC — baixa liquidez (v4.7)",
     "Manter PAPER_TRADING=true até validar a estratégia"
   ],
-  "notes": "v4.6: baseado em análise do conselho após Semana 1. Principal problema identificado: SIGNAL_REVERSE. Solução: filtro EMA8 direcional. Volume threshold reduzido para permitir mais trades. RSI zones expandidas para capturar mais momentum. TP/SL ajustados para melhorar EV.",
-  "take_profit_pct": 0.010,
+  "notes": "v4.7: baseado em análise do conselho 2026-05-03. Principais melhorias: ADX filter elimina mercado lateral, circuit breaker protege drawdown, time filter evita horas de baixa liquidez, ATR mais restritivo, TP aumentado para melhorar EV com R/R 3:1.",
+  "take_profit_pct": 0.015,
   "stop_loss_pct": 0.005,
-  "risk_reward_ratio": 2.0
+  "risk_reward_ratio": 3.0
 }

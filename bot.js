@@ -19,6 +19,13 @@
  *  - RSI zones expanded: LONG 45-70, SHORT 30-55 (captura mais momentum real)
  *  - TP: 0.8% → 1.0%, SL: 0.4% → 0.5% (R/R 2:1 mantido, melhora EV)
  *  - Volume momentum: confirma que último candle > média (qualidade do setup)
+ *
+ * v4.7 optimizations (council analysis 2026-05-01 + 2026-05-03):
+ *  - ADX(14) filter: bloqueia entradas quando ADX < 20 (mercado lateral/sem direção)
+ *  - ATR threshold: 0.12% → 0.18% (filtra mais períodos de baixa volatilidade)
+ *  - Circuit breaker: após 4 SL_HITs consecutivos, pausa 6h (proteção anti-drawdown)
+ *  - R:R 3:1: TP 1.0% → 1.5% (SL mantém 0.5%) — break-even cai de 33.3% para 25%
+ *  - Filtro horário: bloqueia entradas 00h-06h UTC (baixa liquidez BTC)
  */
 
 import "dotenv/config";
@@ -119,13 +126,32 @@ function savePosition(pos) {
   writeFileSync(POSITION_FILE, JSON.stringify(pos, null, 2));
 }
 
-const SL_COOLDOWN_MS = 20 * 60 * 1000; // 20 minutos após SL
+const SL_COOLDOWN_MS       = 20 * 60 * 1000;      // 20 minutos após SL
+const CIRCUIT_BREAKER_LOSSES = 4;                  // v4.7: SL_HITs consecutivos para ativar
+const CIRCUIT_BREAKER_MS   = 6 * 60 * 60 * 1000;  // v4.7: 6 horas de pausa
 
 function clearPosition(exitReason = null) {
+  const current = loadPosition();
+  // v4.7: rastreia perdas consecutivas — reseta no TP, incrementa no SL
+  const consecutive = exitReason === 'SL_HIT'
+    ? (current.consecutiveLosses || 0) + 1
+    : 0;
+
   const cooldown = exitReason === 'SL_HIT'
     ? { slCooldownUntil: Date.now() + SL_COOLDOWN_MS }
     : {};
-  savePosition({ open: false, ...cooldown });
+
+  // v4.7: circuit breaker — após 4 SL_HITs seguidos, pausa 6h
+  const circuitBreaker = consecutive >= CIRCUIT_BREAKER_LOSSES
+    ? { circuitBreakerUntil: Date.now() + CIRCUIT_BREAKER_MS }
+    : {};
+
+  if (consecutive >= CIRCUIT_BREAKER_LOSSES) {
+    const hours = CIRCUIT_BREAKER_MS / 3600000;
+    console.log(`\n🔴 CIRCUIT BREAKER: ${consecutive} SL_HITs consecutivos — pausando ${hours}h`);
+  }
+
+  savePosition({ open: false, consecutiveLosses: consecutive, ...cooldown, ...circuitBreaker });
 }
 
 function calcPnlPct(direction, entryPrice, exitPrice) {
@@ -296,6 +322,49 @@ function calcATR(candles, period = 14) {
   return trSum / period;
 }
 
+// v4.7: ADX — mede força da tendência. < 20 = lateral/choppy, >= 20 = tendência presente
+function calcADX(candles, period = 14) {
+  if (candles.length < period * 2 + 2) return null;
+
+  const trList = [], plusDM = [], minusDM = [];
+  for (let i = 1; i < candles.length; i++) {
+    const { high, low } = candles[i];
+    const prevHigh = candles[i - 1].high;
+    const prevLow  = candles[i - 1].low;
+    const prevClose = candles[i - 1].close;
+    trList.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+    const up   = high - prevHigh;
+    const down = prevLow - low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+
+  // Wilder's smoothing inicial
+  let sTR  = trList.slice(0, period).reduce((a, b) => a + b, 0);
+  let sPDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let sMDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+
+  const dxList = [];
+  for (let i = period; i < trList.length; i++) {
+    sTR  = sTR  - sTR  / period + trList[i];
+    sPDM = sPDM - sPDM / period + plusDM[i];
+    sMDM = sMDM - sMDM / period + minusDM[i];
+    const pdi = sTR > 0 ? 100 * sPDM / sTR : 0;
+    const mdi = sTR > 0 ? 100 * sMDM / sTR : 0;
+    const sum = pdi + mdi;
+    dxList.push(sum > 0 ? 100 * Math.abs(pdi - mdi) / sum : 0);
+  }
+
+  if (dxList.length < period) return null;
+
+  // ADX = Wilder's smoothing do DX
+  let adx = dxList.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxList.length; i++) {
+    adx = (adx * (period - 1) + dxList[i]) / period;
+  }
+  return adx;
+}
+
 function calcVWAP(candles) {
   const midnightUTC = new Date();
   midnightUTC.setUTCHours(0, 0, 0, 0);
@@ -310,7 +379,7 @@ function calcVWAP(candles) {
 
 // ── Safety Check ─────────────────────────────────────────────────────────────────
 
-function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, currentVolume, avgVolume, atr) {
+function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, currentVolume, avgVolume, atr, adx) {
   const bullishBias    = price > vwap;
   const bearishBias    = price < vwap;
   const emaUptrend     = ema8 > ema21;
@@ -326,10 +395,11 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
   // v4.6: EMA8 direction filter — price must be on the correct side of EMA8 (reduz SIGNAL_REVERSE)
   const ema8DirectionOkLong  = price > ema8;
   const ema8DirectionOkShort = price < ema8;
-  // v4.4: ATR filter — bloqueia entradas em mercado lateral/choppy
-  // ATR(14) deve ser >= 0.12% do preco para garantir movimento direcional suficiente
+  // v4.7: ATR threshold aumentado 0.12% → 0.18% (filtra mais períodos de baixa volatilidade)
   const atrPct         = atr ? (atr / price) * 100 : 0;
-  const atrOk          = atr !== null && atrPct >= 0.12;
+  const atrOk          = atr !== null && atrPct >= 0.18;
+  // v4.7: ADX filter — bloqueia entradas em mercado lateral (ADX < 20 = sem tendência)
+  const adxOk          = adx !== null && adx >= 20;
 
   let signal = "NEUTRAL";
   let reason = "";
@@ -376,19 +446,25 @@ function runSafetyCheck(price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, cu
     {
       pass: atrOk,
       label: atr
-        ? `ATR(14): $${atr.toFixed(1)} (${atrPct.toFixed(3)}% do preco${atrOk ? '' : ', min: 0.12% — mercado lateral'})`
+        ? `ATR(14): $${atr.toFixed(1)} (${atrPct.toFixed(3)}% do preco${atrOk ? '' : ', min: 0.18% — mercado lateral'})`
         : `ATR(14): dados insuficientes`,
+    },
+    {
+      pass: adxOk,
+      label: adx !== null
+        ? `ADX(14): ${adx.toFixed(1)}${adxOk ? ' (tendencia presente)' : ' < 20 — mercado lateral/choppy'}`
+        : `ADX(14): dados insuficientes`,
     },
   ];
 
   const allPass = results.every((r) => r.pass);
 
-  if (bullishBias && emaUptrend && ema8DirectionOkLong && rsiLong && trend15mBull && volumeOk && atrOk) {
+  if (bullishBias && emaUptrend && ema8DirectionOkLong && rsiLong && trend15mBull && volumeOk && atrOk && adxOk) {
     signal = "LONG";
-    reason = `LONG | VWAP bull | EMA1m bull | preco>EMA8 | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
-  } else if (bearishBias && emaDowntrend && ema8DirectionOkShort && rsiShort && trend15mBear && volumeOk && atrOk) {
+    reason = `LONG | VWAP bull | EMA1m bull | preco>EMA8 | EMA15m bull | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}% | ADX=${adx ? adx.toFixed(1) : 'N/A'}`;
+  } else if (bearishBias && emaDowntrend && ema8DirectionOkShort && rsiShort && trend15mBear && volumeOk && atrOk && adxOk) {
     signal = "SHORT";
-    reason = `SHORT | VWAP bear | EMA1m bear | preco<EMA8 | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}%`;
+    reason = `SHORT | VWAP bear | EMA1m bear | preco<EMA8 | EMA15m bear | RSI14=${rsi14.toFixed(1)} | vol=$${(currentVolume/1000).toFixed(0)}K | ATR=${atrPct.toFixed(3)}% | ADX=${adx ? adx.toFixed(1) : 'N/A'}`;
   } else {
     const failed = results.filter((r) => !r.pass).map((r) => r.label);
     reason = "NEUTRO | " + failed.join(" | ");
@@ -674,6 +750,7 @@ async function run() {
   const avgVolume   = calcVolumeAvg(candles, 20);
   const curVolume   = candles[candles.length - 1].volume;
   const atr         = calcATR(candles, 14);
+  const adx         = calcADX(candles, 14);  // v4.7: ADX filter
 
   const trend15m = ema8_15m > ema21_15m ? "ALTA" : "BAIXA";
 
@@ -686,6 +763,7 @@ async function run() {
   const fmtVol = (v) => v >= 1e6 ? `$${(v/1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v/1e3).toFixed(1)}K` : `$${v.toFixed(0)}`;
   console.log(`  Volume atual (USDT): ${fmtVol(curVolume)} | Media 20c: ${fmtVol(avgVolume)}`);
   console.log(`  ATR(14):      ${atr ? `$${atr.toFixed(1)} (${((atr/price)*100).toFixed(3)}%)` : 'N/A'}`);
+  console.log(`  ADX(14):      ${adx ? adx.toFixed(1) : 'N/A'}${adx && adx >= 20 ? ' (tendencia presente)' : adx ? ' (lateral/choppy)' : ''}`);
   console.log(`  TradingView:  ${tvSignal}`);
 
   if (vwap === null || vwap === undefined || rsi14 === null || rsi14 === undefined) {
@@ -695,7 +773,7 @@ async function run() {
 
   // Run safety check
   const { results, allPass, signal, reason } = runSafetyCheck(
-    price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, curVolume, avgVolume, atr
+    price, ema8, ema21, vwap, rsi14, ema8_15m, ema21_15m, curVolume, avgVolume, atr, adx
   );
 
   console.log("\n── Decision ─────────────────────────────────────────────────\n");
@@ -757,6 +835,22 @@ async function run() {
     if (savedPos.slCooldownUntil && Date.now() < savedPos.slCooldownUntil) {
       const remainingMin = Math.ceil((savedPos.slCooldownUntil - Date.now()) / 60000);
       console.log(`\n⏳ COOLDOWN POS-SL: aguardando ${remainingMin}min antes de nova entrada (proteção anti-chop)`);
+      console.log("\n================================================\n");
+      return;
+    }
+
+    // v4.7: circuit breaker — pausa 6h após 4 SL_HITs consecutivos
+    if (savedPos.circuitBreakerUntil && Date.now() < savedPos.circuitBreakerUntil) {
+      const remainingH = Math.ceil((savedPos.circuitBreakerUntil - Date.now()) / 3600000);
+      console.log(`\n🔴 CIRCUIT BREAKER ATIVO: pausando ${remainingH}h (${savedPos.consecutiveLosses} SL_HITs consecutivos)`);
+      console.log("\n================================================\n");
+      return;
+    }
+
+    // v4.7: filtro horário — bloqueia entradas 00h-06h UTC (baixa liquidez)
+    const hourUTC = new Date().getUTCHours();
+    if (hourUTC >= 0 && hourUTC < 6) {
+      console.log(`\n⏰ FILTRO HORÁRIO: ${hourUTC}h UTC — bloqueado (00h-06h baixa liquidez)`);
       console.log("\n================================================\n");
       return;
     }
@@ -834,7 +928,7 @@ if (process.argv.includes("--tax-summary")) {
         const blocked = entries.filter(t => !t.orderPlaced);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          version: "v4.6",
+          version: "v4.7",
           uptime: process.uptime(),
           position: pos,
           totalAnalyses: entries.length,
@@ -844,7 +938,7 @@ if (process.argv.includes("--tax-summary")) {
         }, null, 2));
       } else {
         res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("trading-bot v4.6 online\nEndpoints: /trades /status");
+        res.end("trading-bot v4.7 online\nEndpoints: /trades /status");
       }
     }).listen(PORT, () => console.log(`📡 Status server on :${PORT}`));
   });
