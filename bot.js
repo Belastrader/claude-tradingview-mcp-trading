@@ -920,6 +920,34 @@ if (process.argv.includes("--tax-summary")) {
         } catch (e) {
           res.writeHead(500); res.end(e.message);
         }
+      } else if (req.url === "/recent" || req.url.startsWith("/recent?")) {
+        // Retorna os últimos N trades ENTRY/EXIT em JSON — resolve o problema de CSV gigante
+        try {
+          const url = new URL(req.url, "http://localhost");
+          const days = parseInt(url.searchParams.get("days") || "7");
+          const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+          const csvRaw = existsSync(CSV_FILE) ? readFileSync(CSV_FILE, "utf8") : "";
+          const lines  = csvRaw.split("\n").filter(l => l.trim());
+          const header = lines[0] || "";
+          const cols   = header.split(",");
+          const trades = [];
+          for (let i = lines.length - 1; i >= 1; i--) {
+            const row = lines[i].split(",");
+            const notes = row[cols.length - 1] || "";
+            if (!notes.includes("ENTRY") && !notes.includes("EXIT")) continue;
+            const ts = new Date(`${row[0]}T${row[1]}Z`).getTime();
+            if (ts < cutoff) break;
+            trades.unshift({
+              date: row[0], time: row[1], symbol: row[3], side: row[4],
+              price: parseFloat(row[6]) || 0,
+              notes: notes.replace(/^"|"$/g, ""),
+            });
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ days, count: trades.length, trades }, null, 2));
+        } catch (e) {
+          res.writeHead(500); res.end(e.message);
+        }
       } else if (req.url === "/status") {
         const pos = loadPosition();
         const log = loadLog();
